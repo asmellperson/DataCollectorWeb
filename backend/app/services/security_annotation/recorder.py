@@ -7,6 +7,7 @@ import hashlib
 import logging
 import os
 import re
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -88,6 +89,23 @@ def status():
             }
             for rid, item in sessions.items()
         ]
+
+
+def delete(recording_id):
+    with guard, store.lock(recording_id):
+        meta = store.get(recording_id)
+        require(
+            recording_id not in sessions and meta["state"] != "recording",
+            "请先停止录制并等待处理完成，再删除录像",
+            409,
+        )
+        require(
+            meta["state"] != "preparing" and not meta.get("active_task_id"),
+            "录像正在处理，请等待任务完成后再删除",
+            409,
+        )
+        shutil.rmtree(store.folder(recording_id))
+    return {"deleted": recording_id}
 
 
 def start(body):

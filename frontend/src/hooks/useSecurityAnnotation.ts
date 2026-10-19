@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorText } from "../services/api";
-import { inspectionBase, recordingBase, saveInspection } from "../services/securityAnnotation";
+import { deleteInspectionRecording, inspectionBase, recordingBase, saveInspection } from "../services/securityAnnotation";
 import type { InspectionContent, InspectionDetail, InspectionRecording } from "../types/securityAnnotation";
 
 export function useSecurityAnnotation(notify: (message: string) => void) {
@@ -12,6 +12,7 @@ export function useSecurityAnnotation(notify: (message: string) => void) {
   const current = useRef({ id: "", dirty: false, busy: false, sequence: 0, revision: -1 });
   const review = useRef({ seconds: 0, last: Date.now(), activity: 0 });
   const mounted = useRef(true);
+  const deleted = useRef(new Set<string>());
 
   const adopt = useCallback((value: InspectionDetail) => {
     setDetail(value);
@@ -26,7 +27,13 @@ export function useSecurityAnnotation(notify: (message: string) => void) {
     const id = current.current.id;
     const sequence = current.current.sequence;
     if (!id) return;
-    const value = await api<InspectionDetail>(recordingBase(id), { cache: "no-store" });
+    let value: InspectionDetail;
+    try {
+      value = await api<InspectionDetail>(recordingBase(id), { cache: "no-store" });
+    } catch (error) {
+      if (!mounted.current || current.current.id !== id || current.current.sequence !== sequence) return;
+      throw error;
+    }
     if (!mounted.current || current.current.id !== id || current.current.sequence !== sequence) return;
     if (value.annotation.revision < current.current.revision) return;
     if (force || (!current.current.dirty && !current.current.busy)) {
@@ -62,7 +69,7 @@ export function useSecurityAnnotation(notify: (message: string) => void) {
       try {
         const values = await api<InspectionRecording[]>(`${inspectionBase}/recordings`, { cache: "no-store" });
         if (stopped) return;
-        setRecordings(values);
+        setRecordings(values.filter(value => !deleted.current.has(value.id)));
         if (current.current.id) await refresh();
       } catch (error) {
         if (!stopped) notify(errorText(error));
@@ -109,5 +116,33 @@ export function useSecurityAnnotation(notify: (message: string) => void) {
       if (mounted.current) setBusy(false);
     }
   }
-  return { recordings, detail, draft, dirty, busy, change, save, select, refresh, activity };
+  async function remove(id: string) {
+    if (current.current.busy) return false;
+    current.current.busy = true;
+    setBusy(true);
+    try {
+      await deleteInspectionRecording(id);
+      deleted.current.add(id);
+      if (!mounted.current) return true;
+      setRecordings(values => values.filter(value => value.id !== id));
+      if (current.current.id === id) {
+        current.current.id = "";
+        current.current.sequence++;
+        current.current.revision = -1;
+        current.current.dirty = false;
+        setDetail(null);
+        setDraft({ persons: [], rounds: [] });
+        setDirty(false);
+        review.current = { seconds: 0, last: Date.now(), activity: 0 };
+      }
+      return true;
+    } catch (error) {
+      if (mounted.current) notify(errorText(error));
+      return false;
+    } finally {
+      current.current.busy = false;
+      if (mounted.current) setBusy(false);
+    }
+  }
+  return { recordings, detail, draft, dirty, busy, change, save, select, refresh, activity, remove };
 }

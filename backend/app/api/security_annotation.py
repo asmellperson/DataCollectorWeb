@@ -73,6 +73,11 @@ def recording(recording_id: str):
         }
 
 
+@router.delete("/recordings/{recording_id}")
+def delete_recording(recording_id: str):
+    return recorder.delete(recording_id)
+
+
 @router.get("/recordings/{recording_id}/timeline")
 def timeline(recording_id: str):
     require(store.get(recording_id)["state"] == "ready", "原视频尚未准备完成", 409)

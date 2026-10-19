@@ -42,6 +42,7 @@ export type InspectionRecording = {
   name: string;
   source_group: string;
   source_type: "file" | "rtsp";
+  camera_id?: string;
   created_at: string;
   state: "preparing" | "recording" | "ready" | "failed";
   error: string;

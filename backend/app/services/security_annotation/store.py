@@ -86,6 +86,8 @@ def listing():
     for path in parent.iterdir():
         if path.is_dir() and re.fullmatch(r"[a-f0-9]{32}", path.name):
             with lock(path.name):
+                if not path.is_dir() or path.is_symlink():
+                    continue
                 try:
                     meta = get(path.name)
                     doc = annotation(path.name)

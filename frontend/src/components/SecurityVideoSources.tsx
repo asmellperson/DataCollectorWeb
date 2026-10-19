@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, post, errorText } from "../services/api";
 import { inspectionBase } from "../services/securityAnnotation";
 import type { Camera } from "../types";
+import { SecurityCameraPreview } from "./SecurityRecordingPreview";
 
 export default function SecurityVideoSources({ disabled, onCreated, notify }: {
   disabled: boolean; onCreated: (id: string) => Promise<void>; notify: (message: string) => void;
@@ -37,6 +38,8 @@ export default function SecurityVideoSources({ disabled, onCreated, notify }: {
         <label>采集分组（可选）<input value={group} onChange={e => setGroup(e.target.value)} placeholder="同一批连续录像使用相同分组" /></label>
       </div>
       <p>保存连续画面，保留安检开始前的过程。已有文件直接在服务器入库；录制在后台持续运行，可在录像列表停止。</p>
+      {open && mode === "rtsp" && camera && <SecurityCameraPreview key={camera} cameraId={camera}
+        name={cameras.find(value => value.id === camera)?.name || "摄像头"} />}
       <button className="primary">{busy ? "正在提交…" : mode === "file" ? "原视频入库" : "开始连续录制"}</button>
     </fieldset></form>
   </details>;

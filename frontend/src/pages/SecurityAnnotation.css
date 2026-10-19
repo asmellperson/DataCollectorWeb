@@ -6,6 +6,15 @@
 .security-annotation small { font-size: 13px; overflow-wrap: anywhere; }
 .security-annotation summary { cursor: pointer; font-weight: 600; }
 .security-source { margin-bottom: 20px; }
+.security-capture-preview { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #111827; border-radius: 8px; overflow: hidden; }
+.security-capture-preview img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.security-preview-message { position: absolute; inset: 0; display: grid; place-items: center; background: #111827b3; color: white; padding: 20px; text-align: center; }
+.security-live-label { position: absolute; top: 12px; left: 12px; padding: 5px 10px; border-radius: 6px; background: #14532de6; color: white; font-size: 13px; }
+.security-recording-time { font-variant-numeric: tabular-nums; color: #b91c1c; font-size: 16px; }
+.security-capture > .panel-title { margin-bottom: 14px; }
+.security-capture h2 { margin: 0; }
+.security-capture-actions { justify-content: space-between; margin-top: 14px; font-size: 14px; }
+.security-source .security-capture-preview { max-width: 720px; margin: 16px 0; }
 .security-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; align-items: start; }
 .security-fields label { min-width: 0; margin: 10px 0; }
 .security-fields label > button { margin-top: 7px; font-size: 13px; }

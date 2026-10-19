@@ -1,10 +1,19 @@
 import { api } from "./api";
 import type {
-  InspectionAnnotation, InspectionContent, InspectionDetail, InspectionEvent, InspectionRound,
+  InspectionAnnotation, InspectionContent, InspectionDetail, InspectionEvent, InspectionRecording, InspectionRound,
 } from "../types/securityAnnotation";
 
 export const inspectionBase = "/security-annotations";
 export const recordingBase = (id: string) => `${inspectionBase}/recordings/${id}`;
+
+export async function deleteInspectionRecording(id: string) {
+  try {
+    await api(recordingBase(id), { method: "DELETE" });
+  } catch (error) {
+    const values = await api<InspectionRecording[]>(`${inspectionBase}/recordings`, { cache: "no-store" }).catch(() => null);
+    if (!values || values.some(value => value.id === id)) throw error;
+  }
+}
 
 export function inspectionId() {
   // 内网 HTTP 页面也能使用 getRandomValues，不依赖安全上下文中的 randomUUID。

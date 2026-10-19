@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import { api, post, errorText } from "../services/api";
 import { inspectionBase, recordingBase } from "../services/securityAnnotation";
 import { useSecurityAnnotation } from "../hooks/useSecurityAnnotation";
-import type { InspectionConfig, PrelabelOptions } from "../types/securityAnnotation";
+import type { InspectionConfig, InspectionRecording, PrelabelOptions } from "../types/securityAnnotation";
 import SecurityVideoSources from "../components/SecurityVideoSources";
 import SecurityAnnotationReview from "../components/SecurityAnnotationReview";
+import SecurityRecordingPreview from "../components/SecurityRecordingPreview";
 import TaskProgress from "../components/TaskProgress";
 import "./SecurityAnnotation.css";
 
@@ -23,6 +24,7 @@ export default function SecurityAnnotation({ notify, onBusyChange }: {
   const [manifest, setManifest] = useState<{ path: string; counts: Record<string, number>; skipped_rounds: number } | null>(null);
   const [legacyPath, setLegacyPath] = useState("");
   const [legacyId, setLegacyId] = useState("");
+  const [stoppingRecordings, setStoppingRecordings] = useState<string[]>([]);
   useEffect(() => {
     const controller = new AbortController();
     api<InspectionConfig>(`${inspectionBase}/config`, { signal: controller.signal }).then(value => {
@@ -46,6 +48,22 @@ export default function SecurityAnnotation({ notify, onBusyChange }: {
     if (draft.rounds.length && !confirm("载入后会生成新版本并替换当前内容；已有人工版本仍保存在修订历史中。继续？")) return;
     await operation(async () => { await post(path, body); await review.refresh(true); });
   }
+  async function stopRecording(id: string) {
+    await operation(async () => {
+      await post(`${recordingBase(id)}/stop`);
+      setStoppingRecordings(values => [...values, id]);
+    });
+  }
+  async function deleteRecording(recording: InspectionRecording) {
+    if (working || busy) return;
+    const unsaved = detail?.recording.id === recording.id && dirty ? "当前未保存的标注也会丢弃。\n" : "";
+    if (!confirm(`删除录像“${recording.name}”？\n${unsaved}将永久删除该录像的原视频、播放副本及全部标注，已有训练清单对该录像的引用也会失效。此操作无法恢复。`)) return;
+    if (await review.remove(recording.id)) {
+      setSelectedExports(values => values.filter(id => id !== recording.id));
+      setManifest(null);
+      notify("录像已删除");
+    }
+  }
   return <div className="security-annotation" onPointerDown={review.activity} onKeyDown={review.activity}>
     <div className="page-head"><div><div className="eyebrow">VIDEO / SECURITY ANNOTATION</div><h1>安检视频标注</h1>
       <p>连续原视频 → 大模型初标 → 人工复核 → 服务器本地训练清单</p></div></div>
@@ -58,8 +76,12 @@ export default function SecurityAnnotation({ notify, onBusyChange }: {
             <span className="tag">{states[recording.state]}</span>
             <small>{recording.frame_count ? `${recording.duration_sec.toFixed(2)} 秒 · ${recording.round_count || 0} 轮 · 已确认 ${recording.approved_count || 0}` : "保留连续原画面"}</small>
           </button>
-          {recording.state === "recording" && <button type="button" className="danger" disabled={working} onClick={() => void operation(() => post(`${recordingBase(recording.id)}/stop`))}>停止并准备标注</button>}
+          {recording.state === "recording" && <button type="button" className="danger" disabled={busy || working || stoppingRecordings.includes(recording.id)} onClick={() => void stopRecording(recording.id)}>{stoppingRecordings.includes(recording.id) ? "正在停止…" : "停止并准备标注"}</button>}
           {recording.state === "ready" && <label className="security-check"><input type="checkbox" checked={selectedExports.includes(recording.id)} onChange={e => setSelectedExports(e.target.checked ? [...selectedExports, recording.id] : selectedExports.filter(id => id !== recording.id))} />加入训练清单</label>}
+          <button type="button" className="danger" aria-label={`删除录像：${recording.name}`}
+            disabled={busy || working || recording.state === "recording" || recording.state === "preparing" || !!recording.active_task_id}
+            title={recording.state === "recording" ? "请先停止录制并等待处理完成" : recording.state === "preparing" || recording.active_task_id ? "请等待后台任务完成" : "删除原视频及全部标注"}
+            onClick={() => void deleteRecording(recording)}>删除录像</button>
         </div>)}
         {!review.recordings.length && <p className="muted">导入一段连续录像，或从摄像头开始录制。</p>}
       </aside>
@@ -72,6 +94,9 @@ export default function SecurityAnnotation({ notify, onBusyChange }: {
             {detail.recording.active_task_id && <TaskProgress key={detail.recording.active_task_id} id={detail.recording.active_task_id} notify={notify} onDone={() => void review.refresh()} />}
             {detail.recording.state === "failed" && <button disabled={working} onClick={() => void operation(() => post(`${recordingBase(detail.recording.id)}/prepare`))}>重新准备已保存的原文件</button>}
           </section>
+          {detail.recording.state === "recording" && <SecurityRecordingPreview key={detail.recording.id}
+            recording={detail.recording} stopping={stoppingRecordings.includes(detail.recording.id)} disabled={busy || working}
+            onStop={() => void stopRecording(detail.recording.id)} />}
           {detail.recording.state === "ready" && options && config && <>
             <section className="panel security-prelabel"><h2>大模型自动初标</h2><p>当前模型：{config.model}。先自动提出人物、轮次与动作边界，所有结果进入待复核。</p>
               <fieldset disabled={working || busy || dirty || !!detail.recording.active_task_id}>

@@ -73,3 +73,31 @@ test("save conflicts preserve the current draft instead of treating another edit
   await assert.rejects(saveInspection("record", { revision: 1 }, draft, 2), /version conflict/);
   assert.equal(draft.rounds[0].id, "round");
 });
+
+test("a lost deletion response is verified against the server before clearing local state", async () => {
+  const requests = [];
+  const { deleteInspectionRecording } = service(async (path, options) => {
+    requests.push({ path, options });
+    if (options.method === "DELETE") throw new Error("response lost");
+    return [{ id: "other" }];
+  });
+  await deleteInspectionRecording("record");
+  assert.equal(requests[0].path, "/security-annotations/recordings/record");
+  assert.equal(requests[1].path, "/security-annotations/recordings");
+  assert.equal(requests[1].options.cache, "no-store");
+});
+
+test("a failed deletion remains failed while the recording exists on the server", async () => {
+  const { deleteInspectionRecording } = service(async (_path, options) => {
+    if (options.method === "DELETE") throw new Error("录像正在处理");
+    return [{ id: "record" }];
+  });
+  await assert.rejects(deleteInspectionRecording("record"), /录像正在处理/);
+});
+
+test("an unavailable deletion read-back preserves the original error", async () => {
+  const { deleteInspectionRecording } = service(async (_path, options) => {
+    throw new Error(options.method === "DELETE" ? "delete failed" : "read-back failed");
+  });
+  await assert.rejects(deleteInspectionRecording("record"), /delete failed/);
+});
