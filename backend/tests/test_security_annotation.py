@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -579,6 +580,7 @@ class SecurityAnnotationTests(unittest.TestCase):
     def test_rtsp_recording_copies_stream_and_stop_prepares_saved_original(self):
         done = threading.Event()
         process = Mock()
+        process.stderr = io.BytesIO()
         process.poll.side_effect = lambda: 255 if done.is_set() else None
         process.wait.side_effect = lambda **_kwargs: (done.wait(5), 255)[1]
         process.send_signal.side_effect = lambda _signal: done.set()
@@ -603,6 +605,9 @@ class SecurityAnnotationTests(unittest.TestCase):
                 },
             ),
             patch.object(recorder.subprocess, "Popen", side_effect=start_process),
+            patch.object(
+                recorder, "rtsp_timeout_args", return_value=("-stimeout", "5000000")
+            ),
             patch.object(workflow, "submit") as submit,
         ):
             result = recorder.start(RecordingStart(camera_id="camera"))
