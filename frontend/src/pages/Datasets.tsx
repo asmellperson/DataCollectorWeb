@@ -4,6 +4,10 @@ import ExportDialog from "../components/ExportDialog";
 import { api, post, errorText, formatBytes } from "../services/api";
 import ImageImport, { ImportProgress } from "../components/ImageImport";
 import ModelPicker from "../components/ModelPicker";
+import ClassSelector from "../components/ClassSelector";
+import LabelImportFields from "../components/LabelImportFields";
+import { useLabelImport } from "../hooks/useLabelImport";
+import { serializeClassMapping } from "../services/classMapping";
 import {
   useImageImport,
   imageFiles,
@@ -32,6 +36,9 @@ export default function Datasets({
   const [files, setFiles] = useState<File[]>([]);
   const [skipped, setSkipped] = useState(0);
   const [options, setOptions] = useState<ImportOptions>(defaultImportOptions);
+  const [importMode, setImportMode] = useState<"images" | "labels">("images");
+  const labelImport = useLabelImport("0 person\n1 helmet\n2 forklift");
+  const withLabels = !editing && type === "detection" && importMode === "labels";
   const [created, setCreated] = useState<Dataset | null>(null);
   const [formError, setFormError] = useState("");
   const [importDataset, setImportDataset] = useState<Dataset | null>(null);
@@ -39,7 +46,11 @@ export default function Datasets({
   const directoryInput = useRef<HTMLInputElement>(null);
   const saving = useRef(false);
   const importer = useImageImport();
-  const working = busy || importer.busy;
+  const working = busy || importer.busy || labelImport.checking;
+  const draftClasses = classes.split("\n").flatMap((line) => {
+    const match = line.trim().match(/^(\d+)\s+(.+)$/);
+    return match ? [{ id: Number(match[1]), name: match[2] }] : [];
+  });
   useEffect(() => {
     onBusyChange(working || panelBusy);
     return () => onBusyChange(false);
@@ -49,6 +60,8 @@ export default function Datasets({
     setFiles([]);
     setSkipped(0);
     setOptions(defaultImportOptions);
+    setImportMode("images");
+    labelImport.reset();
     setCreated(null);
     setFormError("");
     importer.reset();
@@ -67,19 +80,21 @@ export default function Datasets({
     setBusy(true);
     setFormError("");
     try {
+      const annotations = withLabels ? labelImport.data() : undefined;
       const parsed =
-        type === "raw"
+        annotations ? annotations.classes : type === "raw"
           ? []
           : classes
-              .split("\n")
-              .filter((l) => l.trim())
-              .map((l) => {
-                const match = l.trim().match(/^(\d+)\s+(.+)$/);
-                if (!match) throw new Error("类别格式应为：0 person");
-                return { id: Number(match[1]), name: match[2] };
-              });
+            .split("\n")
+            .filter((l) => l.trim())
+            .map((l) => {
+              const match = l.trim().match(/^(\d+)\s+(.+)$/);
+              if (!match) throw new Error("类别格式应为：0 person");
+              return { id: Number(match[1]), name: match[2] };
+            });
       if (
         !editing &&
+        !withLabels &&
         files.length &&
         type === "detection" &&
         options.auto_label === "custom_yolo" &&
@@ -95,6 +110,31 @@ export default function Datasets({
         await reload();
         setEditing(undefined);
       } else {
+        if (
+          !withLabels &&
+          files.length &&
+          type === "detection" &&
+          options.auto_label !== "off" &&
+          options.label_class_ids !== null &&
+          options.label_class_ids !== undefined &&
+          (!options.label_class_ids.length ||
+            options.label_class_ids.some(
+              (id) => !parsed.some((c) => c.id === id),
+            ))
+        ) {
+          throw new Error("请至少选择一个有效的自动标注类别");
+        }
+        if (
+          !withLabels &&
+          files.length &&
+          type === "detection" &&
+          options.auto_label !== "off"
+        ) {
+          serializeClassMapping(
+            options.label_class_mapping,
+            options.label_class_ids,
+          );
+        }
         const dataset = await post<Dataset>("/datasets", {
           name,
           task_type: type,
@@ -102,7 +142,7 @@ export default function Datasets({
         });
         setCreated(dataset);
         if (files.length) {
-          await importer.runImport(dataset, { files }, options);
+          await importer.runImport(dataset, { files, annotations }, options);
           await reload();
         } else {
           await reload();
@@ -178,12 +218,15 @@ export default function Datasets({
                   <button onClick={() => navigate("review", d.id)}>
                     进入标注
                   </button>
+                  <button onClick={() => navigate("statistics", d.id)}>
+                    数据统计
+                  </button>
                   <button onClick={() => setImportDataset(d)}>导入图片</button>
                   <button onClick={() => navigate("collection", d.id)}>
                     继续采集
                   </button>
                   <button onClick={() => setExportDataset(d)}>导出</button>
-                  <button onClick={() => open(d)}>设置</button>
+                  <button onClick={() => open(d)}>类别 / 设置</button>
                   <button className="danger" onClick={() => remove(d)}>
                     删除
                   </button>
@@ -307,22 +350,47 @@ export default function Datasets({
                     <option value="raw">原始数据</option>
                   </select>
                 </label>
-                {type !== "raw" && (
+                {type !== "raw" && !withLabels && (
                   <label>
                     类别（每行 ID 名称，ID 创建后保持不变）
                     <textarea
                       rows={4}
                       value={classes}
-                      onChange={(e) => setClasses(e.target.value)}
+                      onChange={(e) => {
+                        setClasses(e.target.value);
+                        setOptions((old) => ({
+                          ...old,
+                          label_class_ids: null,
+                          label_class_mapping: {},
+                        }));
+                      }}
                     />
+                    <small>
+                      增加一行即可新增类别，例如 3 car。使用未用过的 ID；此 ID
+                      不必等于 COCO 或模型类别
+                      ID。训练一个或多个目标可在导出时勾选，无需删除其他类别。
+                    </small>
                   </label>
                 )}
                 {!editing && (
                   <div className="create-directory">
-                    <h3>
-                      导入本地图片目录 <span className="muted">（可选）</span>
-                    </h3>
-                    <p>不选择目录即可创建空数据集，之后也能补充图片。</p>
+                    <h3>导入数据 <span className="muted">（可选）</span></h3>
+                    {type === "detection" && <div className="source-tabs" role="group" aria-label="导入方式">
+                      <button type="button" className={importMode === "images" ? "primary" : ""}
+                        onClick={() => {
+                          if (importMode === "labels") {
+                            if (labelImport.report) setClasses(labelImport.report.classes.map((c) => `${c.id} ${c.name}`).join("\n"));
+                            else if (labelImport.method === "manual") setClasses(labelImport.text);
+                          }
+                          setOptions(defaultImportOptions);
+                          setImportMode("images");
+                        }}>仅图片</button>
+                      <button type="button" className={importMode === "labels" ? "primary" : ""}
+                        onClick={() => {
+                          if (importMode === "images") labelImport.changeText(classes);
+                          setImportMode("labels");
+                        }}>图片 + 标签</button>
+                    </div>}
                     <input
                       ref={directoryInput}
                       className="file-input-hidden"
@@ -333,6 +401,7 @@ export default function Datasets({
                       onChange={(event) => {
                         const selected = imageFiles(event.target.files);
                         setFiles(selected);
+                        labelImport.invalidate();
                         setSkipped(
                           (event.target.files?.length || 0) - selected.length,
                         );
@@ -356,6 +425,7 @@ export default function Datasets({
                           type="button"
                           onClick={() => {
                             setFiles([]);
+                            labelImport.invalidate();
                             setSkipped(0);
                             setFormError("");
                             if (directoryInput.current)
@@ -378,7 +448,6 @@ export default function Datasets({
                         </strong>
                         <p>
                           {skipped > 0 && `已忽略 ${skipped} 个非图片文件。`}
-                          点击“创建并导入”后开始上传，并显示导入张数和进度。
                         </p>
                       </div>
                     ) : (
@@ -386,7 +455,8 @@ export default function Datasets({
                         支持 JPG、JPEG、PNG、BMP、WebP，包含子目录。
                       </small>
                     )}
-                    {files.length > 0 && type === "detection" && (
+                    {withLabels && <LabelImportFields value={labelImport} images={files} />}
+                    {files.length > 0 && type === "detection" && !withLabels && (
                       <>
                         <label>
                           导入时自动标注
@@ -417,6 +487,19 @@ export default function Datasets({
                               setOptions({ ...options, model_path })
                             }
                             notify={setFormError}
+                          />
+                        )}
+                        {options.auto_label !== "off" && (
+                          <ClassSelector
+                            modelClassIds={options.label_class_mapping ?? {}}
+                            onModelClassIdsChange={(label_class_mapping) =>
+                              setOptions({ ...options, label_class_mapping })
+                            }
+                            classes={draftClasses}
+                            value={options.label_class_ids ?? null}
+                            onChange={(label_class_ids) =>
+                              setOptions({ ...options, label_class_ids })
+                            }
                           />
                         )}
                         {options.auto_label !== "off" && (
@@ -455,7 +538,7 @@ export default function Datasets({
                 >
                   取消
                 </button>
-                <button className="primary" disabled={working}>
+                <button className="primary" disabled={working || (withLabels && !labelImport.ready)}>
                   {working
                     ? "正在保存…"
                     : editing

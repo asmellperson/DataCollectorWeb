@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Dataset } from "../types";
 import { api, post, errorText } from "../services/api";
 import TaskProgress from "./TaskProgress";
+import ClassSelector from "./ClassSelector";
 
 type SplitMode = "none" | "train_val" | "train_val_test";
 type ExportPlan = { total: number; counts: Record<string, number> };
@@ -26,6 +27,11 @@ export default function ExportDialog({
   const [val, setVal] = useState("20");
   const [test, setTest] = useState("10");
   const [pending, setPending] = useState(false);
+  const [classIds, setClassIds] = useState<number[] | null>(null);
+  const [includeEmpty, setIncludeEmpty] = useState(true);
+  const selectedClasses = dataset.classes.filter(
+    (c) => classIds === null || classIds.includes(c.id),
+  );
   const [task, setTask] = useState("");
   const [busy, setBusy] = useState(false);
   const submitting = useRef(false);
@@ -61,9 +67,16 @@ export default function ExportDialog({
     val_ratio: mode === "none" ? 0 : Number(val) / 100,
     test_ratio: mode === "train_val_test" ? Number(test) / 100 : 0,
     include_pending: pending,
+    class_ids:
+      dataset.task_type === "raw" ? null : selectedClasses.map((c) => c.id),
+    include_empty: includeEmpty,
   });
   const currentPreview = preview?.key === requestKey ? preview : null;
-  const error = ratioError || currentPreview?.error;
+  const selectionError =
+    dataset.task_type !== "raw" && !selectedClasses.length
+      ? "请至少选择一个训练类别。"
+      : "";
+  const error = ratioError || selectionError || currentPreview?.error;
 
   function load() {
     api(`/datasets/${dataset.id}/exports`)
@@ -72,7 +85,7 @@ export default function ExportDialog({
   }
   useEffect(load, [dataset.id]);
   useEffect(() => {
-    if (ratioError) return;
+    if (ratioError || selectionError) return;
     const controller = new AbortController();
     const timer = setTimeout(() => {
       api<ExportPlan>(`/datasets/${dataset.id}/export/preview`, {
@@ -92,7 +105,7 @@ export default function ExportDialog({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [dataset.id, requestKey, ratioError]);
+  }, [dataset.id, requestKey, ratioError, selectionError]);
 
   function changeMode(value: SplitMode) {
     setMode(value);
@@ -136,6 +149,35 @@ export default function ExportDialog({
               : "原始图片 + 统一 JSON"}
         </p>
         <fieldset className="export-options" disabled={busy}>
+          {dataset.task_type !== "raw" && (
+            <>
+              <ClassSelector
+                classes={dataset.classes}
+                value={classIds}
+                onChange={setClassIds}
+                title="训练 / 导出类别"
+                hint="只导出所选类别的标签，按下方映射从 0 连续编号；原数据集和原标注保持不变。"
+              />
+              <p>
+                导出编号：
+                {selectedClasses
+                  .map((c, i) => `${c.id} ${c.name} → ${i}`)
+                  .join("；")}
+              </p>
+              {dataset.task_type === "detection" ? (
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={includeEmpty}
+                    onChange={(e) => setIncludeEmpty(e.target.checked)}
+                  />
+                  保留不含所选目标的图片（作为空标签背景样本）
+                </label>
+              ) : (
+                <p>仅导出分类标签属于所选类别的图片。</p>
+              )}
+            </>
+          )}
           <label>
             划分方式
             <select

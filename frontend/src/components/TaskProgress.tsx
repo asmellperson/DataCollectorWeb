@@ -49,6 +49,7 @@ export default function TaskProgress({
         <span>
           {task.processed} / {task.total} · 成功 {task.success} · 失败{" "}
           {task.failed}
+          {task.kind === "auto_label" && ` · 跳过 ${task.skipped ?? 0}`}
         </span>
         {["queued", "running"].includes(task.status) && (
           <button
@@ -63,6 +64,11 @@ export default function TaskProgress({
       </div>
       <progress value={task.processed} max={task.total || 1} />
       {task.error && <small className="danger">{task.error}</small>}
+      {task.kind === "auto_label" && task.skipped > 0 && (
+        <p>
+          已跳过有所选类别标注或已不在待审核状态的图片。需要重做时，请勾选“覆盖所选类别已有标注”。
+        </p>
+      )}
       {task.result?.classes && (
         <details>
           <summary>模型原始类别（{task.result.classes.length}）</summary>

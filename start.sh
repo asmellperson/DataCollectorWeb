@@ -51,7 +51,7 @@ pid_for() {
   case "$role" in
     supervisor) [[ " ${command[*]} " == *" $PROJECT_DIR/start.sh __run "* ]] || return 1 ;;
     backend) [[ "$cwd" == "$PROJECT_DIR/backend" && " ${command[*]} " == *" run.py "* && "${command[0]##*/}" == python* ]] || return 1 ;;
-    frontend) [[ "$cwd" == "$PROJECT_DIR/frontend" && " ${command[*]} " == *" node_modules/vite/bin/vite.js "* && "${command[0]##*/}" == node ]] || return 1 ;;
+    frontend) [[ "$cwd" == "$PROJECT_DIR/frontend" && "${command[0]##*/}" == node && ( " ${command[*]} " == *" node_modules/vite/bin/vite.js "* || " ${command[*]} " == *" server.mjs "* ) ]] || return 1 ;;
     *) return 1 ;;
   esac
   echo "$pid"
@@ -88,7 +88,7 @@ check_environment() {
     done
   fi
   [[ -n "$PYTHON_BIN" && -x "$PYTHON_BIN" ]] || fail "未找到 $ENV_NAME 环境，请按 README 安装，或用 DCW_PYTHON 指定解释器绝对路径。"
-  for program in node curl flock setsid nohup; do
+  for program in node npm curl flock setsid nohup; do
     command -v "$program" >/dev/null 2>&1 || fail "未找到 $program，请先安装相应依赖。"
   done
   node -e 'if (Number(process.versions.node.split(".")[0]) < 20) process.exit(1)' || fail "需要 Node.js 20 或以上版本。"
@@ -105,6 +105,13 @@ PY
   export DCW_PYTHON="$PYTHON_BIN"
   ENV_READY=1
   echo "环境检查通过：$PYTHON_BIN"
+}
+
+build_frontend() {
+  [[ "${BUILD_READY:-0}" == 1 ]] && return
+  echo "正在构建生产前端……"
+  (cd "$PROJECT_DIR/frontend" && npm run build) || fail "前端构建失败，现有服务继续运行。"
+  BUILD_READY=1
 }
 
 # 守护进程和两个服务位于独立会话，标准输入关闭、输出落盘。
@@ -124,7 +131,7 @@ supervise() {
   record_pid backend "$BACKEND_PID"
   (
     cd "$PROJECT_DIR/frontend"
-    exec node node_modules/vite/bin/vite.js --host 0.0.0.0 --port 5180 --strictPort 9>&-
+    exec node server.mjs 9>&-
   ) >>"$LOG_DIR/frontend.log" 2>&1 &
   FRONTEND_PID=$!
   record_pid frontend "$FRONTEND_PID"
@@ -182,6 +189,7 @@ start_services() {
     fail "存在尚未就绪或残留的本项目进程，请先执行 status 查看，或执行 restart 恢复。"
   fi
   check_environment
+  build_frontend
   flock -n "$PROJECT_DIR/config/start.lock" true || fail "旧版启动脚本仍在运行，请在原终端按 Ctrl+C 后重新启动。"
   "$PYTHON_BIN" - <<'PY'
 import socket
@@ -249,5 +257,5 @@ flock -n 8 || fail "另一个启动或停止命令正在执行，请稍后重试
 case "$ACTION" in
   start) start_services ;;
   stop) stop_services ;;
-  restart) check_environment; stop_services; start_services ;;
+  restart) check_environment; build_frontend; stop_services; start_services ;;
 esac

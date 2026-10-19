@@ -1,5 +1,12 @@
 import { useState, useEffect, useRef } from "react";
-import type { Dataset, BBox } from "../types";
+import type {
+  Dataset,
+  BBox,
+  ClassMapping,
+  Camera,
+  CollectionStatus,
+} from "../types";
+import { serializeClassMapping } from "../services/classMapping";
 import {
   api,
   post,
@@ -8,10 +15,10 @@ import {
   formatBytes,
   type UploadProgress,
 } from "../services/api";
-import LivePreview from "../components/LivePreview";
-import { useLiveCamera } from "../hooks/useLiveCamera";
+import CollectionCameraTile from "../components/CollectionCameraTile";
 import ModelPicker from "../components/ModelPicker";
 import TaskProgress from "../components/TaskProgress";
+import ClassSelector from "../components/ClassSelector";
 export default function Collection({
   dataset,
   reload,
@@ -24,104 +31,180 @@ export default function Collection({
   onBusyChange: (busy: boolean) => void;
 }) {
   const [source, setSource] = useState("rtsp");
-  const [cameras, setCameras] = useState<any[]>([]);
-  const [camera, setCamera] = useState("");
+  const [cameras, setCameras] = useState<Camera[]>([]);
+  const [selectedCameras, setSelectedCameras] = useState<string[]>([]);
   const [mode, setMode] = useState("raw_interval");
   const [interval, setIntervalValue] = useState(2);
-  const [roi, setRoi] = useState<BBox | null>(null);
-  const [drawing, setDrawing] = useState(false);
-  const [collection, setCollection] = useState<any>({
+  const [rois, setRois] = useState<Record<string, BBox | null>>({});
+  const [collection, setCollection] = useState<CollectionStatus>({
     active: false,
-    saved: 0,
-    labeled: 0,
-    duplicates: 0,
+    active_count: 0,
+    max_cameras: 9,
+    sessions: [],
   });
+  const [starting, setStarting] = useState(false);
+  const mounted = useRef(true);
   const [autoLabel, setAutoLabel] = useState("off");
   const [detector, setDetector] = useState("yolo_world");
   const [modelPath, setModelPath] = useState("");
+  const [triggerModelPath, setTriggerModelPath] = useState("");
+  const [labelClasses, setLabelClasses] = useState<number[] | null>(null);
+  const [classMapping, setClassMapping] = useState<ClassMapping>({});
   const [confidence, setConfidence] = useState(0.25);
   const [similarity, setSimilarity] = useState(0.92);
   const [targets, setTargets] = useState("person");
   const restored = useRef(false);
-  const live = useLiveCamera(
-    source === "rtsp" ? camera : "",
-    collection.active &&
-      collection.camera_id === camera &&
-      collection.detecting,
+  const ownSessions = collection.sessions.filter(
+    (s) => s.dataset_id === dataset.id,
   );
+  const activeSessions = ownSessions.filter((s) => s.active);
+  const pendingCameras = selectedCameras.filter(
+    (id) => !collection.sessions.some((s) => s.camera_id === id && s.active),
+  );
+  const selected = cameras.filter((c) => selectedCameras.includes(c.id));
+  const counts = ownSessions.reduce(
+    (sum, s) => ({
+      saved: sum.saved + s.saved,
+      labeled: sum.labeled + s.labeled,
+      duplicates: sum.duplicates + s.duplicates,
+    }),
+    { saved: 0, labeled: 0, duplicates: 0 },
+  );
+  const ready = useRef(false);
+  const [statusReady, setStatusReady] = useState(false);
   useEffect(() => {
-    api("/cameras")
+    let live = true;
+    api<Camera[]>("/cameras")
       .then((r) => {
+        if (!live) return;
         setCameras(r);
-        setCamera(r[0]?.id || "");
+        setSelectedCameras((ids) => (ids.length ? ids : r[0] ? [r[0].id] : []));
       })
-      .catch((e) => notify(errorText(e)));
+      .catch((e) => live && notify(errorText(e)));
+    return () => {
+      live = false;
+    };
   }, []);
+  function acceptStatus(s: CollectionStatus) {
+    if (!mounted.current) return;
+    setCollection(s);
+    setStatusReady(true);
+    ready.current = true;
+    const active = s.sessions.filter(
+      (item) => item.active && item.dataset_id === dataset.id,
+    );
+    if (active.length) {
+      // 刷新恢复所有运行中的画面；后续轮询只补充，不覆盖用户的新选择。
+      setSelectedCameras((ids) =>
+        [...new Set([...active.map((item) => item.camera_id), ...ids])].slice(
+          0,
+          9,
+        ),
+      );
+      if (!restored.current) {
+        restored.current = true;
+        const config = active[0].config;
+        setSource("rtsp");
+        setMode(active[0].mode);
+        setIntervalValue(config.interval);
+        setRois(
+          Object.fromEntries(
+            active.map((item) => [item.camera_id, item.config.roi]),
+          ),
+        );
+        setAutoLabel(config.auto_label);
+        setDetector(config.detector);
+        setModelPath(config.model_path || "");
+        setTriggerModelPath(
+          config.trigger_model_path || config.model_path || "",
+        );
+        setTargets((config.target_classes || ["person"]).join(", "));
+        setLabelClasses(config.label_class_ids ?? null);
+        setClassMapping(config.label_class_mapping ?? {});
+        setConfidence(config.confidence);
+        setSimilarity(config.similarity);
+      }
+    }
+  }
   useEffect(() => {
+    mounted.current = true;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
+    const controller = new AbortController();
     async function tick() {
       try {
-        const s = await api("/collection/status");
-        if (!stopped) {
-          setCollection(s);
-          if (s.active && !restored.current) {
-            restored.current = true;
-            setSource("rtsp");
-            setCamera(s.camera_id);
-            setMode(s.mode);
-            setTask(s.task_id);
-            if (s.config) {
-              setIntervalValue(s.config.interval);
-              setRoi(s.config.roi);
-              setAutoLabel(s.config.auto_label);
-              setDetector(s.config.detector);
-              setModelPath(s.config.model_path || "");
-              setConfidence(s.config.confidence);
-              setSimilarity(s.config.similarity);
-            }
-          }
-          if (!s.active) restored.current = false;
-        }
+        const s = await api<CollectionStatus>("/collection/status", {
+          signal: controller.signal,
+        });
+        if (!stopped) acceptStatus(s);
       } catch (e) {
-        if (!stopped) notify(errorText(e));
+        if (!stopped && !ready.current) notify(errorText(e));
       }
       if (!stopped) timer = setTimeout(tick, 1000);
     }
     void tick();
     return () => {
+      mounted.current = false;
       stopped = true;
+      controller.abort();
       clearTimeout(timer);
     };
-  }, []);
+  }, [dataset.id]);
   async function start() {
+    if (starting || !pendingCameras.length) return;
+    setStarting(true);
+    restored.current = true;
     try {
-      const r = await post("/collection/start", {
-        dataset_id: dataset.id,
-        camera_id: camera,
-        mode,
-        interval,
-        roi,
-        auto_label: autoLabel,
-        detector,
-        model_path: modelPath || null,
-        confidence,
-        similarity,
-        target_classes: targets
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean),
-      });
-      setTask(r.task_id);
-      setCollection((c: any) => ({ ...c, active: true }));
+      const results = await Promise.allSettled(
+        pendingCameras.map((cameraId) =>
+          post("/collection/start", {
+            dataset_id: dataset.id,
+            camera_id: cameraId,
+            mode,
+            interval,
+            roi: mode === "roi_interval" ? (rois[cameraId] ?? null) : null,
+            auto_label: autoLabel,
+            detector,
+            model_path: modelPath || null,
+            trigger_model_path: triggerModelPath || null,
+            label_class_ids: autoLabel === "off" ? null : labelClasses,
+            label_class_mapping:
+              autoLabel === "off"
+                ? {}
+                : serializeClassMapping(classMapping, labelClasses),
+            confidence,
+            similarity,
+            target_classes: targets
+              .split(/[,，\n]/)
+              .map((s) => s.trim())
+              .filter(Boolean),
+          }),
+        ),
+      );
+      const errors = results.flatMap((r, i) =>
+        r.status === "rejected"
+          ? [
+              `${cameras.find((c) => c.id === pendingCameras[i])?.name}: ${errorText(r.reason)}`,
+            ]
+          : [],
+      );
+      if (errors.length)
+        notify(
+          `部分摄像头未启动：${errors.join("；")}。成功启动的摄像头继续采集。`,
+        );
+      acceptStatus(await api<CollectionStatus>("/collection/status"));
     } catch (e) {
       notify(errorText(e));
+    } finally {
+      setStarting(false);
     }
   }
-  async function stop() {
+  async function stop(cameraId?: string) {
     try {
-      await post("/collection/stop");
-      await reload();
+      const query = new URLSearchParams({ dataset_id: dataset.id });
+      if (cameraId) query.set("camera_id", cameraId);
+      acceptStatus(await post<CollectionStatus>(`/collection/stop?${query}`));
+      void reload().catch((e) => notify(errorText(e)));
     } catch (e) {
       notify(errorText(e));
     }
@@ -140,6 +223,11 @@ export default function Collection({
         auto_label: autoLabel,
         model_path: modelPath || null,
         confidence,
+        label_class_ids: autoLabel === "off" ? null : labelClasses,
+        label_class_mapping:
+          autoLabel === "off"
+            ? {}
+            : serializeClassMapping(classMapping, labelClasses),
       };
       let r;
       if (videoFile) {
@@ -168,9 +256,9 @@ export default function Collection({
   const [preview, setPreview] = useState("");
   const [transfer, setTransfer] = useState<UploadProgress | null>(null);
   useEffect(() => {
-    onBusyChange(busy);
+    onBusyChange(busy || starting);
     return () => onBusyChange(false);
-  }, [busy, onBusyChange]);
+  }, [busy, starting, onBusyChange]);
   useEffect(
     () => () => {
       if (preview.startsWith("blob:")) URL.revokeObjectURL(preview);
@@ -184,9 +272,10 @@ export default function Collection({
           <div className="eyebrow">CAPTURE / IMPORT</div>
           <h1>数据采集</h1>
           <p>目标数据集：{dataset.name}</p>
-          {collection.active && collection.dataset_id !== dataset.id && (
-            <p>当前运行中的采集目标：{collection.dataset_id}；停止后可切换。</p>
-          )}
+          <p>
+            当前数据集采集中 {activeSessions.length} 路 · 全部数据集{" "}
+            {collection.active_count} / 9 路
+          </p>
         </div>
       </div>
       <div className="source-tabs" role="group" aria-label="数据源">
@@ -196,7 +285,7 @@ export default function Collection({
         ].map(([value, label]) => (
           <button
             key={value}
-            disabled={collection.active || busy}
+            disabled={activeSessions.length > 0 || busy || starting}
             className={source === value ? "primary" : ""}
             onClick={() => setSource(value)}
           >
@@ -207,18 +296,30 @@ export default function Collection({
       <div className="collection-layout">
         <div className="capture-center">
           {source === "rtsp" ? (
-            <LivePreview
-              url={live.status.connected ? live.url : ""}
-              width={live.status.width}
-              height={live.status.height}
-              roi={roi}
-              drawing={drawing}
-              onRoi={(b) => {
-                setRoi(b);
-                setDrawing(false);
-              }}
-              message={live.status.error}
-            />
+            <div
+              className={`collection-camera-grid columns-${selected.length <= 1 ? 1 : selected.length <= 4 ? 2 : 3}`}
+            >
+              {selected.map((camera) => (
+                <CollectionCameraTile
+                  key={camera.id}
+                  camera={camera}
+                  session={ownSessions.find((s) => s.camera_id === camera.id)}
+                  roi={rois[camera.id] ?? null}
+                  roiMode={mode === "roi_interval"}
+                  onRoi={(roi) =>
+                    setRois((all) => ({ ...all, [camera.id]: roi }))
+                  }
+                  onStop={() => void stop(camera.id)}
+                  intervalMs={
+                    selected.length > 4 ? 400 : selected.length > 1 ? 250 : 150
+                  }
+                  busy={starting}
+                />
+              ))}
+              {!selected.length && (
+                <div className="empty">勾选摄像头开始预览，最多显示 9 路。</div>
+              )}
+            </div>
           ) : (
             <div className="preview-stage">
               {preview ? (
@@ -231,19 +332,12 @@ export default function Collection({
           <div className="live-footer">
             <span>
               {source === "rtsp"
-                ? live.status.connected
-                  ? "● 已连接"
-                  : live.status.error
+                ? `实时画面 ${selected.length} / 9 路`
                 : "视频抽帧"}
             </span>
-            <span>实际 FPS：{source === "rtsp" ? live.status.fps : "—"}</span>
-            <span>本次保存：{source === "rtsp" ? collection.saved : "—"}</span>
-            <span>
-              自动预标：{source === "rtsp" ? collection.labeled : "—"}
-            </span>
-            <span>
-              跳过重复：{source === "rtsp" ? collection.duplicates : "—"}
-            </span>
+            <span>本次保存：{counts.saved}</span>
+            <span>自动预标：{counts.labeled}</span>
+            <span>跳过重复：{counts.duplicates}</span>
           </div>
         </div>
         <section className="panel controls">
@@ -253,7 +347,7 @@ export default function Collection({
             <select
               aria-label="数据源"
               value={source}
-              disabled={collection.active || busy}
+              disabled={activeSessions.length > 0 || busy || starting}
               onChange={(e) => setSource(e.target.value)}
             >
               <option value="video">视频抽帧</option>
@@ -347,6 +441,15 @@ export default function Collection({
                     />
                   )}
                   {autoLabel !== "off" && (
+                    <ClassSelector
+                      modelClassIds={classMapping}
+                      onModelClassIdsChange={setClassMapping}
+                      classes={dataset.classes}
+                      value={labelClasses}
+                      onChange={setLabelClasses}
+                    />
+                  )}
+                  {autoLabel !== "off" && (
                     <label>
                       置信度
                       <input
@@ -363,7 +466,11 @@ export default function Collection({
               )}
               <button
                 className="primary"
-                disabled={busy || (!videoFile && !videoPath)}
+                disabled={
+                  busy ||
+                  (!videoFile && !videoPath) ||
+                  (autoLabel !== "off" && labelClasses?.length === 0)
+                }
                 onClick={() => void importVideo()}
               >
                 开始抽帧导入
@@ -372,24 +479,52 @@ export default function Collection({
             </>
           ) : (
             <>
-              <fieldset disabled={collection.active}>
-                <label>
-                  摄像头
-                  <select
-                    aria-label="摄像头"
-                    value={camera}
-                    onChange={(e) => {
-                      setCamera(e.target.value);
-                      setRoi(null);
-                    }}
-                  >
-                    {cameras.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+              <fieldset
+                disabled={starting || !statusReady}
+                className="camera-selection"
+              >
+                <legend>摄像头 · 已选 {selectedCameras.length} / 9</legend>
+                <div className="camera-selection-list">
+                  {cameras.map((camera) => {
+                    const running = collection.sessions.find(
+                      (s) => s.camera_id === camera.id && s.active,
+                    );
+                    const checked = selectedCameras.includes(camera.id);
+                    const elsewhere =
+                      running && running.dataset_id !== dataset.id;
+                    return (
+                      <label key={camera.id}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={
+                            !!running ||
+                            (!checked && selectedCameras.length >= 9)
+                          }
+                          onChange={(e) =>
+                            setSelectedCameras((ids) =>
+                              e.target.checked
+                                ? [...ids, camera.id].slice(0, 9)
+                                : ids.filter((id) => id !== camera.id),
+                            )
+                          }
+                        />
+                        <span>
+                          {camera.name}
+                          {elsewhere
+                            ? "（其他数据集采集中）"
+                            : running
+                              ? "（采集中）"
+                              : ""}
+                        </span>
+                      </label>
+                    );
+                  })}
+                  {!cameras.length && <p>请先在摄像头页面添加摄像头。</p>}
+                </div>
+              </fieldset>
+              <p>以下设置用于新启动的摄像头，运行中的各路配置保持不变。</p>
+              <fieldset disabled={starting}>
                 <label>
                   采集模式
                   <select
@@ -413,29 +548,51 @@ export default function Collection({
                     onChange={(e) => setIntervalValue(Number(e.target.value))}
                   />
                 </label>
-                <label>ROI（原图坐标）</label>
-                <div className="actions">
-                  <button
-                    disabled={!live.status.connected}
-                    className={drawing ? "primary" : ""}
-                    onClick={() => setDrawing(!drawing)}
-                  >
-                    {roi ? "重新绘制 ROI" : "绘制 ROI"}
-                  </button>
-                  <button
-                    onClick={() => {
-                      setRoi(null);
-                      setDrawing(false);
-                    }}
-                  >
-                    清除
-                  </button>
-                </div>
-                <p>
-                  {roi
-                    ? roi.map((v) => Math.round(v)).join(", ")
-                    : "在实时画面上拖动绘制"}
-                </p>
+                {mode === "roi_interval" && (
+                  <p>
+                    在每个摄像头画面下点击“绘制 ROI”，各路分别设置裁剪区域。
+                  </p>
+                )}
+                {mode.startsWith("detect_") && (
+                  <>
+                    <h4>保存条件</h4>
+                    <label>
+                      触发检测器
+                      <select
+                        aria-label="触发检测器"
+                        value={detector}
+                        onChange={(e) => setDetector(e.target.value)}
+                      >
+                        <option value="yolo_world">YOLO-World</option>
+                        <option value="custom_yolo">自定义 YOLO</option>
+                      </select>
+                    </label>
+                    {detector === "custom_yolo" && (
+                      <ModelPicker
+                        value={triggerModelPath}
+                        onChange={setTriggerModelPath}
+                        notify={notify}
+                      />
+                    )}
+                    <label>
+                      触发目标名称或 ID（逗号分隔）
+                      <input
+                        value={targets}
+                        placeholder="例如 car 或 2；多种车辆可填 2, 5, 7"
+                        onChange={(e) => setTargets(e.target.value)}
+                      />
+                    </label>
+                    <p>
+                      检测到任意一个所选目标即保存。目标与下方标注类别独立。
+                    </p>
+                    <small>
+                      {detector === "yolo_world"
+                        ? "YOLO-World 支持目标名称；数字按 YOLO COCO 的 0–79 类别解释：0 person、2 car、5 bus、7 truck。"
+                        : "数字是触发模型的原始类别 ID，请先读取模型类别。仅使用 COCO 权重时，2 才代表 car；这里不是数据集类别 ID。"}
+                    </small>
+                  </>
+                )}
+                <h4>保存后自动标注</h4>
                 <label>
                   自动预标
                   <select
@@ -449,37 +606,20 @@ export default function Collection({
                     <option value="custom_yolo">自定义 YOLO</option>
                   </select>
                 </label>
-                {mode.startsWith("detect_") && (
-                  <>
-                    <label>
-                      触发检测器
-                      <select
-                        aria-label="触发检测器"
-                        value={detector}
-                        onChange={(e) => setDetector(e.target.value)}
-                      >
-                        <option value="yolo_world">YOLO-World</option>
-                        <option value="custom_yolo">自定义 YOLO</option>
-                      </select>
-                    </label>
-                    {dataset.task_type !== "detection" && (
-                      <label>
-                        触发目标（逗号分隔）
-                        <input
-                          value={targets}
-                          onChange={(e) => setTargets(e.target.value)}
-                        />
-                      </label>
-                    )}
-                  </>
-                )}
-                {(autoLabel === "custom_yolo" ||
-                  (mode.startsWith("detect_") &&
-                    detector === "custom_yolo")) && (
+                {autoLabel === "custom_yolo" && (
                   <ModelPicker
                     value={modelPath}
                     onChange={setModelPath}
                     notify={notify}
+                  />
+                )}
+                {autoLabel !== "off" && (
+                  <ClassSelector
+                    modelClassIds={classMapping}
+                    onModelClassIdsChange={setClassMapping}
+                    classes={dataset.classes}
+                    value={labelClasses}
+                    onChange={setLabelClasses}
                   />
                 )}
                 {(autoLabel !== "off" || mode.startsWith("detect_")) && (
@@ -511,19 +651,36 @@ export default function Collection({
               <div className="actions">
                 <button
                   className="primary"
-                  disabled={collection.active || !camera}
+                  disabled={
+                    starting ||
+                    !statusReady ||
+                    !pendingCameras.length ||
+                    collection.active_count + pendingCameras.length > 9 ||
+                    (mode === "roi_interval" &&
+                      pendingCameras.some((id) => !rois[id])) ||
+                    (mode.startsWith("detect_") &&
+                      (!targets.trim() ||
+                        (detector === "custom_yolo" &&
+                          !triggerModelPath.trim()))) ||
+                    (autoLabel !== "off" && labelClasses?.length === 0) ||
+                    (autoLabel === "custom_yolo" && !modelPath.trim())
+                  }
                   onClick={() => void start()}
                 >
-                  开始采集
+                  {starting
+                    ? "正在启动…"
+                    : `开始采集（${pendingCameras.length} 路）`}
                 </button>
                 <button
-                  disabled={!collection.active}
+                  disabled={!activeSessions.length || starting}
                   onClick={() => void stop()}
                 >
-                  停止
+                  停止本数据集全部
                 </button>
               </div>
-              {collection.error && <p className="danger">{collection.error}</p>}
+              {collection.active_count + pendingCameras.length > 9 && (
+                <p role="alert">全局最多 9 路采集，请先停止其他摄像头。</p>
+              )}
             </>
           )}
           {busy && (

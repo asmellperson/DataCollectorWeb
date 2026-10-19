@@ -6,6 +6,7 @@
   font-size: 18px;
   line-height: 1.5;
 }
+
 * {
   box-sizing: border-box;
 }
@@ -794,6 +795,46 @@ label.check input {
   margin: 22px 0 12px;
   font-size: 16px;
 }
+.label-import-fields {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+.dataset-import-modal .modal-heading button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.label-import-fields .source-tabs {
+  margin: 0;
+}
+.label-import-fields > button {
+  justify-self: start;
+}
+.label-import-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: 13px;
+}
+.import-class-mapping summary {
+  cursor: pointer;
+  margin-bottom: 10px;
+}
+.import-class-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+.import-class-row span,
+.label-import-fields li {
+  overflow-wrap: anywhere;
+}
+.label-import-fields .class-tags,
+.import-class-mapping {
+  max-height: 260px;
+  overflow: auto;
+}
 .class-tags {
   display: flex;
   gap: 8px;
@@ -927,5 +968,133 @@ label.check input {
   .object-panel {
     grid-column: 1 / -1;
     max-height: none;
+  }
+}
+.class-selector {
+  border: 1px solid #d6dfe8;
+  border-radius: 8px;
+  padding: 12px;
+  margin: 14px 0;
+  min-width: 0;
+}
+.class-selector legend {
+  padding: 0 5px;
+  font-weight: 600;
+}
+.class-selector-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  max-height: 210px;
+  overflow-y: auto;
+  margin: 10px 0;
+}
+.class-selector .check {
+  margin: 0;
+}
+.class-selector small {
+  display: block;
+}
+.class-mapping-row {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 0;
+  border-bottom: 1px solid #e3e9f0;
+}
+.class-mapping-row .class-source-id {
+  margin: 0;
+  font-size: 12px;
+}
+.class-selector:has(.class-mapping-row) .class-selector-list {
+  max-height: 360px;
+}
+
+.collection-camera-grid {
+  display: grid;
+  gap: 12px;
+  align-items: start;
+}
+.collection-camera-grid.columns-1 {
+  grid-template-columns: minmax(0, 1fr);
+}
+.collection-camera-grid.columns-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.collection-camera-grid.columns-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.collection-camera-tile {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #d9e0e9;
+  border-radius: 9px;
+  background: white;
+}
+.collection-camera-tile .live-preview {
+  height: auto;
+  min-height: 0;
+  aspect-ratio: 16 / 9;
+  border-radius: 0;
+}
+.collection-camera-tile.roi-editing {
+  grid-column: 1 / -1;
+}
+.camera-tile-head,
+.camera-tile-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  flex-wrap: wrap;
+  font-size: 14px;
+}
+.camera-tile-head strong {
+  overflow-wrap: anywhere;
+}
+.capture-active {
+  color: #21845b;
+}
+.camera-tile-status {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 10px;
+  font-size: 13px;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+.camera-tile-actions:empty {
+  display: none;
+}
+.camera-tile-actions button {
+  font-size: 13px;
+  padding: 5px 8px;
+}
+.camera-selection-list {
+  max-height: 280px;
+  overflow: auto;
+}
+.camera-selection-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+.camera-selection-list input[type="checkbox"] {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  flex-shrink: 0;
+}
+@media (max-width: 1100px) {
+  .collection-camera-grid.columns-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 600px) {
+  .collection-camera-grid.columns-2,
+  .collection-camera-grid.columns-3 {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

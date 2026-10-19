@@ -11,6 +11,7 @@ from app.services.dataset_service import ensure_idle, folder
 
 log = logging.getLogger(__name__)
 pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="job")
+collection_pool = ThreadPoolExecutor(max_workers=9, thread_name_prefix="collection")
 events: dict[str, threading.Event] = {}
 
 
@@ -33,12 +34,12 @@ class Progress:
                 setattr(row, k, v)
             db.commit()
 
-    def advance(self, error=None):
+    def advance(self, error=None, *, skipped=False):
         with Session() as db:
             row = db.get(Task, self.id)
             row.processed += 1
             row.failed += int(error is not None)
-            row.success += int(error is None)
+            row.success += int(error is None and not skipped)
             if error is not None:
                 row.error = str(error)[:2000]
             db.commit()
@@ -48,7 +49,18 @@ def submit(kind, dataset_id, fn, cleanup=None):
     with dataset_lock(dataset_id or "_global"), Session() as db:
         if dataset_id:
             folder(dataset_id)
-            ensure_idle(dataset_id)
+            if kind == "collection":
+                # 多路采集可写入同一数据集，文件/数据库提交仍由数据集锁保护。
+                conflict = db.scalar(
+                    select(Task.id).where(
+                        Task.dataset_id == dataset_id,
+                        Task.status.in_(["queued", "running"]),
+                        Task.kind != "collection",
+                    )
+                )
+                require(not conflict, "该数据集有其他任务，请先停止或等待完成", 409)
+            else:
+                ensure_idle(dataset_id)
         task_id = uuid4().hex
         db.add(Task(id=task_id, kind=kind, dataset_id=dataset_id))
         db.commit()
@@ -78,7 +90,16 @@ def submit(kind, dataset_id, fn, cleanup=None):
                     log.exception("任务临时文件清理失败")
             events.pop(task_id, None)
 
-    pool.submit(run)
+    try:
+        (collection_pool if kind == "collection" else pool).submit(run)
+    except Exception:
+        events.pop(task_id, None)
+        with Session() as db:
+            row = db.get(Task, task_id)
+            row.status = "failed"
+            row.error = "任务未能提交，请稍后重试"
+            db.commit()
+        raise
     return {"task_id": task_id}
 
 
@@ -88,6 +109,8 @@ def get(task_id):
         require(row, "任务不存在", 404)
         data = {c.name: getattr(row, c.name) for c in Task.__table__.columns}
     data["result"] = json.loads(data["result"])
+    # 已处理数包含跳过项，避免为计数增加数据库迁移。
+    data["skipped"] = data["processed"] - data["success"] - data["failed"]
     return data
 
 
@@ -122,3 +145,4 @@ def shutdown():
     for event in list(events.values()):
         event.set()
     pool.shutdown(wait=True)
+    collection_pool.shutdown(wait=True)

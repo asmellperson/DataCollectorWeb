@@ -8,12 +8,23 @@ import cv2
 from sqlalchemy import select
 from app.db.database import Session, Camera
 from app.core.storage import require
-from app.services.annotation_service import encode
 
 log = logging.getLogger(__name__)
 open_lock = threading.Lock()
 readers_lock = threading.RLock()
 readers = {}
+
+
+def encode_preview(frame, max_width=960):
+    """浏览器预览使用小尺寸 JPEG，采集快照和训练图片不缩放。"""
+    height, width = frame.shape[:2]
+    if width > max_width:
+        frame = cv2.resize(
+            frame, (max_width, max(1, round(height * max_width / width)))
+        )
+    ok, data = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+    require(ok, "预览编码失败", 503)
+    return data.tobytes()
 
 
 class CameraReader:
@@ -43,6 +54,8 @@ class CameraReader:
             cap = None
             try:
                 with open_lock:
+                    if self.stop_event.is_set():
+                        return
                     os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
                         f"rtsp_transport;{self.camera['transport']}"
                     )
@@ -132,10 +145,15 @@ class CameraReader:
                 self.error or "暂无实时图像",
                 503,
             )
-            if self.jpeg_id != self.frame_id:
-                self.jpeg = encode(self.frame)
-                self.jpeg_id = self.frame_id
-            return self.jpeg
+            if self.jpeg_id == self.frame_id:
+                return self.jpeg
+            frame, frame_id = self.frame, self.frame_id
+        # 编码时允许读流线程继续接收新帧，不把预览负载传回采集链路。
+        jpeg = encode_preview(frame)
+        with self.lock:
+            if frame_id >= self.jpeg_id and self.frame is not None and not self.error:
+                self.jpeg, self.jpeg_id = jpeg, frame_id
+        return jpeg
 
     def stop(self):
         self.stop_event.set()

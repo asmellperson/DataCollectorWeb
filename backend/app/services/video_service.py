@@ -21,6 +21,11 @@ def extract(dataset_id, path, options, progress, filename=None):
         options.auto_label == "off" or dataset["task_type"] == "detection",
         "视频自动预标仅支持 detection 数据集",
     )
+    classes = (
+        datasets.label_classes(dataset, options)
+        if options.auto_label != "off"
+        else []
+    )
     cap = cv2.VideoCapture(str(path), cv2.CAP_FFMPEG)
     try:
         require(cap.isOpened(), "视频读取失败，请检查格式和编码")
@@ -35,9 +40,7 @@ def extract(dataset_id, path, options, progress, filename=None):
         progress.update(total=estimate)
         if options.auto_label != "off":
             with manager.lock:
-                manager.get(options.auto_label, options.model_path).set_classes(
-                    dataset["classes"]
-                )
+                manager.get(options.auto_label, options.model_path).set_classes(classes)
         index = 0
         saved = 0
         next_time = 0.0
@@ -62,7 +65,7 @@ def extract(dataset_id, path, options, progress, filename=None):
                     objects = manager.predict(
                         options.auto_label,
                         options.model_path,
-                        dataset["classes"],
+                        classes,
                         image,
                         options.confidence,
                     )

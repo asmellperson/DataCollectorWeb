@@ -23,6 +23,7 @@ def check_options(dataset_id, options):
         "视频自动预标仅支持 detection 数据集",
     )
     if options.auto_label != "off":
+        datasets.label_classes(dataset, options)
         manager.resolve(options.auto_label, options.model_path)
 
 

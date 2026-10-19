@@ -10,6 +10,7 @@ import {
 } from "react-konva";
 import Konva from "konva";
 import type { AnnotationObject, BBox } from "../types";
+import { cachedImage, loadImage } from "../services/imageCache";
 const colors = ["#51bffc", "#f6c557", "#aa93ff", "#51d7a9", "#f58c9d"];
 export const classColor = (id: number) => colors[id % colors.length];
 function Box({
@@ -143,16 +144,15 @@ export default function AnnotationCanvas({
     return () => r.disconnect();
   }, []);
   useEffect(() => {
+    let active = true;
     setDraft(null);
-    setImage(undefined);
+    setImage(cachedImage(url));
     setLoadError(false);
-    const im = new window.Image();
-    im.onload = () => setImage(im);
-    im.onerror = () => setLoadError(true);
-    im.src = url;
+    loadImage(url)
+      .then((im) => active && setImage(im))
+      .catch(() => active && setLoadError(true));
     return () => {
-      im.onload = null;
-      im.onerror = null;
+      active = false;
     };
   }, [url]);
   useEffect(() => setDraft(null), [cancelToken, drawing]);
@@ -213,7 +213,7 @@ export default function AnnotationCanvas({
           onMouseUp={end}
           onMouseLeave={() => draft && end()}
         >
-          <Layer>
+          <Layer listening={false}>
             <Group x={ox} y={oy} scaleX={scale} scaleY={scale}>
               <KImage
                 image={image}
@@ -221,6 +221,10 @@ export default function AnnotationCanvas({
                 height={height}
                 name="image"
               />
+            </Group>
+          </Layer>
+          <Layer>
+            <Group x={ox} y={oy} scaleX={scale} scaleY={scale}>
               {objects.map((obj) => (
                 <Box
                   key={obj.id}

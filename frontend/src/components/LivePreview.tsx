@@ -60,60 +60,62 @@ export default function LivePreview({
               height: height * scale,
             }}
           />
-          <div
-            className={drawing ? "roi-overlay drawing" : "roi-overlay"}
-            style={{ pointerEvents: drawing ? "auto" : "none" }}
-          >
-            <Stage
-              ref={stage}
-              width={size.width}
-              height={size.height}
-              onMouseLeave={() => setDraft(null)}
-              onMouseDown={() => {
-                const p = pointer();
-                if (drawing && p) setDraft([p.x, p.y, p.x, p.y]);
-              }}
-              onMouseMove={() => {
-                const p = pointer();
-                if (draft && p) setDraft([draft[0], draft[1], p.x, p.y]);
-              }}
-              onMouseUp={() => {
-                if (draft) {
-                  const b: BBox = [
-                    Math.min(draft[0], draft[2]),
-                    Math.min(draft[1], draft[3]),
-                    Math.max(draft[0], draft[2]),
-                    Math.max(draft[1], draft[3]),
-                  ];
-                  if (b[2] - b[0] > 2 && b[3] - b[1] > 2) onRoi(b);
-                  setDraft(null);
-                }
-              }}
+          {(box || drawing) && (
+            <div
+              className={drawing ? "roi-overlay drawing" : "roi-overlay"}
+              style={{ pointerEvents: drawing ? "auto" : "none" }}
             >
-              <Layer>
-                {box && (
-                  <>
-                    <Rect
-                      x={ox + Math.min(box[0], box[2]) * scale}
-                      y={oy + Math.min(box[1], box[3]) * scale}
-                      width={Math.abs(box[2] - box[0]) * scale}
-                      height={Math.abs(box[3] - box[1]) * scale}
-                      stroke="#59e6a6"
-                      fill="#59e6a615"
-                      strokeWidth={2}
-                    />
-                    <Text
-                      x={ox + Math.min(box[0], box[2]) * scale + 5}
-                      y={oy + Math.min(box[1], box[3]) * scale + 5}
-                      text="ROI"
-                      fill="#59e6a6"
-                      fontSize={14}
-                    />
-                  </>
-                )}
-              </Layer>
-            </Stage>
-          </div>
+              <Stage
+                ref={stage}
+                width={size.width}
+                height={size.height}
+                onMouseLeave={() => setDraft(null)}
+                onMouseDown={() => {
+                  const p = pointer();
+                  if (drawing && p) setDraft([p.x, p.y, p.x, p.y]);
+                }}
+                onMouseMove={() => {
+                  const p = pointer();
+                  if (draft && p) setDraft([draft[0], draft[1], p.x, p.y]);
+                }}
+                onMouseUp={() => {
+                  if (draft) {
+                    const b: BBox = [
+                      Math.min(draft[0], draft[2]),
+                      Math.min(draft[1], draft[3]),
+                      Math.max(draft[0], draft[2]),
+                      Math.max(draft[1], draft[3]),
+                    ];
+                    if (b[2] - b[0] > 2 && b[3] - b[1] > 2) onRoi(b);
+                    setDraft(null);
+                  }
+                }}
+              >
+                <Layer>
+                  {box && (
+                    <>
+                      <Rect
+                        x={ox + Math.min(box[0], box[2]) * scale}
+                        y={oy + Math.min(box[1], box[3]) * scale}
+                        width={Math.abs(box[2] - box[0]) * scale}
+                        height={Math.abs(box[3] - box[1]) * scale}
+                        stroke="#59e6a6"
+                        fill="#59e6a615"
+                        strokeWidth={2}
+                      />
+                      <Text
+                        x={ox + Math.min(box[0], box[2]) * scale + 5}
+                        y={oy + Math.min(box[1], box[3]) * scale + 5}
+                        text="ROI"
+                        fill="#59e6a6"
+                        fontSize={14}
+                      />
+                    </>
+                  )}
+                </Layer>
+              </Stage>
+            </div>
+          )}
         </>
       ) : (
         <div className="canvas-loading">{message || "选择摄像头开始预览"}</div>

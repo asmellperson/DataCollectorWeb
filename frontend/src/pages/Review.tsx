@@ -3,107 +3,296 @@ import type { Dataset, Annotation, AnnotationObject, BBox } from "../types";
 import { api, post, errorText } from "../services/api";
 import AnnotationCanvas, { classColor } from "../components/AnnotationCanvas";
 import AutoLabel from "../components/AutoLabel";
+import { loadImage } from "../services/imageCache";
+import { saveAnnotation } from "../services/annotationSave";
+import {
+  readReviewPreferences,
+  writePreference,
+} from "../services/preferences";
 const statusNames = {
   pending: "待审核",
   approved: "已确认",
   rejected: "已拒绝",
 };
 type Snapshot = Pick<Annotation, "objects" | "classification">;
+type PendingEdit = Snapshot & { undo: boolean };
+type SamplePage = {
+  items: Annotation[];
+  total: number;
+  offset: number;
+  anchor_index: number | null;
+};
+type LoadOptions = {
+  offset?: number;
+  filter?: string;
+  prefer?: string | null;
+  index?: number;
+  restore?: boolean;
+};
+const PAGE_SIZE = 100;
 export default function Review({
   dataset,
   notify,
   reload,
+  initialSampleId,
+  onBusyChange,
 }: {
   dataset: Dataset;
   notify: (s: string) => void;
   reload: () => Promise<void>;
+  initialSampleId?: string | null;
+  onBusyChange?: (busy: boolean) => void;
 }) {
+  const [saved] = useState(() => {
+    const preferences = readReviewPreferences(dataset);
+    return initialSampleId
+      ? { ...preferences, sampleId: initialSampleId, index: 0, filter: "" }
+      : preferences;
+  });
   const [items, setItems] = useState<Annotation[]>([]);
   const [sample, setSample] = useState<Annotation | null>(null);
-  const [offset, setOffset] = useState(0);
+  const [offset, setOffset] = useState(
+    Math.floor(saved.index / PAGE_SIZE) * PAGE_SIZE,
+  );
   const [total, setTotal] = useState(0);
-  const [filter, setFilter] = useState("");
+  const [filter, setFilter] = useState(saved.filter);
   const [selected, setSelected] = useState<string | null>(null);
-  const [classId, setClassId] = useState(dataset.classes[0]?.id ?? 0);
+  const [classId, setClassId] = useState(saved.classId);
   const [drawing, setDrawing] = useState(false);
   const [history, setHistory] = useState<Snapshot[]>([]);
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [ready, setReady] = useState(false);
+  const [resumeMessage, setResumeMessage] = useState("");
+  const [remembered, setRemembered] = useState(false);
   const locked = useRef(false);
   const [cancelToken, setCancelToken] = useState(0);
   const [saveText, setSaveText] = useState("已保存");
+  const [pendingEdit, setPendingEdit] = useState<PendingEdit | null>(null);
+  const pendingEditRef = useRef<PendingEdit | null>(null);
+  const [saveError, setSaveError] = useState("");
+  const blocked = busy || loading || pendingEdit !== null;
   const request = useRef(0);
+  const selectedThumbnail = useRef<HTMLButtonElement>(null);
+  const lastPosition = useRef<ReturnType<typeof readReviewPreferences> | null>(
+    null,
+  );
+  const refreshCurrent = useRef(() => {});
   const base = `/datasets/${dataset.id}`;
+  const sampleIndex = sample
+    ? offset + items.findIndex((item) => item.id === sample.id)
+    : 0;
+  if (ready)
+    lastPosition.current = {
+      sampleId: sample?.id ?? null,
+      index: Math.max(0, sampleIndex),
+      filter,
+      classId,
+    };
+  useEffect(() => {
+    if (ready)
+      setRemembered(
+        writePreference(dataset.id, "review", lastPosition.current),
+      );
+  }, [dataset.id, ready, sample?.id, sampleIndex, filter, classId]);
+  useEffect(() => {
+    selectedThumbnail.current?.scrollIntoView({ block: "nearest" });
+  }, [sample?.id, offset]);
+  useEffect(() => {
+    onBusyChange?.(busy || pendingEdit !== null);
+  }, [busy, pendingEdit, onBusyChange]);
+  useEffect(() => {
+    const preventLoss = (event: BeforeUnloadEvent) => {
+      if (!locked.current && !pendingEditRef.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", preventLoss);
+    return () => {
+      window.removeEventListener("beforeunload", preventLoss);
+      onBusyChange?.(false);
+    };
+  }, [onBusyChange]);
+  function display(s: Annotation | null) {
+    setSample(s);
+    setSelected(null);
+    setHistory([]);
+    setDrawing(false);
+    setSaveText("已保存");
+  }
   async function choose(id: string) {
-    if (locked.current) return;
+    if (locked.current || pendingEditRef.current) return;
     const token = ++request.current;
+    setLoading(true);
+    const next = items.find((item) => item.id === id);
+    if (next) void loadImage(next.image_url).catch(() => {});
     try {
-      const s = await api<Annotation>(`${base}/samples/${id}`);
+      const s = await api<Annotation>(`${base}/samples/${id}`, {
+        cache: "no-store",
+      });
       if (token !== request.current) return;
-      setSample(s);
-      setSelected(null);
-      setHistory([]);
-      setDrawing(false);
-      setSaveText("已保存");
+      display(s);
+      setResumeMessage("");
     } catch (e) {
-      notify(errorText(e));
+      if (token === request.current) notify(errorText(e));
+    } finally {
+      if (token === request.current) setLoading(false);
     }
   }
-  async function load(prefer?: string) {
-    const r = await api(
-      `${base}/samples?offset=${offset}&limit=100${filter ? "&status=" + filter : ""}`,
-    );
-    setItems(r.items);
-    setTotal(r.total);
-    const id =
-      prefer && r.items.some((s: Annotation) => s.id === prefer)
-        ? prefer
-        : r.items[0]?.id;
-    if (id) await choose(id);
-    else setSample(null);
+  async function load(options: LoadOptions = {}) {
+    if (locked.current || pendingEditRef.current) return;
+    const token = ++request.current;
+    const nextFilter = options.filter ?? filter;
+    const nextOffset = options.offset ?? offset;
+    setLoading(true);
+    try {
+      const query = new URLSearchParams({
+        offset: String(nextOffset),
+        limit: String(PAGE_SIZE),
+      });
+      if (nextFilter) query.set("status", nextFilter);
+      if (options.prefer) query.set("anchor_id", options.prefer);
+      const r = await api<SamplePage>(`${base}/samples?${query}`);
+      if (token !== request.current) return;
+      const index = Math.max(
+        0,
+        Math.min(
+          (r.anchor_index ?? options.index ?? r.offset) - r.offset,
+          r.items.length - 1,
+        ),
+      );
+      const id = r.items[index]?.id;
+      if (id) void loadImage(r.items[index].image_url).catch(() => {});
+      const nextSample = id
+        ? await api<Annotation>(`${base}/samples/${id}`, { cache: "no-store" })
+        : null;
+      if (token !== request.current) return;
+      setItems(r.items);
+      setTotal(r.total);
+      setOffset(r.offset);
+      setFilter(nextFilter);
+      display(nextSample);
+      setReady(true);
+      setResumeMessage(
+        options.restore && options.prefer
+          ? id === options.prefer
+            ? "已恢复上次审核位置。"
+            : id
+              ? "上次图片已删除或不在当前筛选中，已定位到附近图片。"
+              : "上次图片已删除或不在当前筛选中，当前没有可恢复的图片。"
+          : "",
+      );
+    } catch (e) {
+      if (token === request.current) notify(errorText(e));
+    } finally {
+      if (token === request.current) setLoading(false);
+    }
   }
   useEffect(() => {
-    void load().catch((e) => notify(errorText(e)));
+    void load({
+      prefer: saved.sampleId,
+      index: saved.index,
+      restore: !initialSampleId,
+    });
+    const remember = () => {
+      if (lastPosition.current)
+        writePreference(dataset.id, "review", lastPosition.current);
+    };
+    window.addEventListener("pagehide", remember);
     return () => {
       request.current++;
+      remember();
+      window.removeEventListener("pagehide", remember);
     };
-  }, [dataset.id, offset, filter]);
+  }, [dataset.id]);
+  useEffect(() => {
+    if (!sample || loading || document.hidden) return;
+    const index = items.findIndex((item) => item.id === sample.id);
+    // 当前图优先；有限预取相邻两张，避免抢占首图和缩略图带宽。
+    let cancelled = false;
+    void loadImage(sample.image_url)
+      .then(() => {
+        if (cancelled) return;
+        for (const item of [items[index + 1], items[index - 1]])
+          if (item) void loadImage(item.image_url).catch(() => {});
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [sample?.id, items, loading]);
+  refreshCurrent.current = () => {
+    if (sample && !loading) void choose(sample.id);
+    void reload();
+  };
   async function edit(
     objects: AnnotationObject[],
     classification = sample?.classification ?? null,
     undo = false,
   ) {
-    if (!sample || locked.current) return;
+    if (pendingEditRef.current) return;
+    await saveEdit({ objects, classification, undo });
+  }
+  async function saveEdit(draft: PendingEdit) {
+    if (!sample || locked.current || loading) return;
     locked.current = true;
+    request.current++;
+    pendingEditRef.current = draft;
+    setPendingEdit(draft);
+    onBusyChange?.(true);
     setBusy(true);
     setSaveText("保存中…");
+    setSaveError("");
     const previous = {
       objects: sample.objects,
       classification: sample.classification,
     };
     try {
-      const result = await api<Annotation>(
-        `${base}/samples/${sample.id}/annotation`,
-        {
-          method: "PUT",
-          body: JSON.stringify({
-            revision: sample.revision,
-            objects,
-            classification: classification
-              ? { id: classification.class_id, name: classification.class_name }
-              : null,
-          }),
-        },
-      );
+      const result = await saveAnnotation(base, sample, draft);
       setSample(result);
       setItems((rows) =>
         rows.map((s) => (s.id === result.id ? { ...s, ...result } : s)),
       );
-      setHistory((h) => (undo ? h.slice(0, -1) : [...h.slice(-49), previous]));
+      setHistory((h) =>
+        draft.undo ? h.slice(0, -1) : [...h.slice(-49), previous],
+      );
+      pendingEditRef.current = null;
+      setPendingEdit(null);
       setSaveText("已保存");
-      void reload();
+      if (sample.status !== result.status)
+        void reload().catch((e) => notify(errorText(e)));
     } catch (e) {
-      setSaveText("保存失败");
-      notify(errorText(e));
+      setSaveText("未保存");
+      setSaveError(errorText(e));
+    } finally {
+      locked.current = false;
+      setBusy(false);
+    }
+  }
+  async function discardEdit() {
+    if (
+      !sample ||
+      locked.current ||
+      !confirm("放弃本次未保存的修改，并重新读取服务器上的标注？")
+    )
+      return;
+    locked.current = true;
+    setBusy(true);
+    try {
+      const current = await api<Annotation>(`${base}/samples/${sample.id}`, {
+        cache: "no-store",
+      });
+      pendingEditRef.current = null;
+      setPendingEdit(null);
+      setSaveError("");
+      setItems((rows) =>
+        rows.map((row) =>
+          row.id === current.id ? { ...row, ...current } : row,
+        ),
+      );
+      display(current);
+    } catch (e) {
+      setSaveError(errorText(e));
     } finally {
       locked.current = false;
       setBusy(false);
@@ -178,15 +367,19 @@ export default function Review({
     }
   }
   async function move(delta: number) {
-    if (!sample || locked.current) return;
+    if (!sample || locked.current || loading || pendingEditRef.current) return;
     const index = items.findIndex((s) => s.id === sample.id);
     if (items[index + delta]) await choose(items[index + delta].id);
     else if (delta > 0 && offset + items.length < total)
-      setOffset(offset + 100);
-    else if (delta < 0 && offset > 0) setOffset(Math.max(0, offset - 100));
+      await load({ offset: offset + PAGE_SIZE, index: offset + PAGE_SIZE });
+    else if (delta < 0 && offset > 0)
+      await load({
+        offset: Math.max(0, offset - PAGE_SIZE),
+        index: offset - 1,
+      });
   }
   async function status(approved: boolean) {
-    if (!sample || locked.current) return;
+    if (!sample || locked.current || loading || pendingEditRef.current) return;
     locked.current = true;
     setBusy(true);
     try {
@@ -197,9 +390,12 @@ export default function Review({
       setItems((rows) =>
         rows.map((s) => (s.id === result.id ? { ...s, ...result } : s)),
       );
-      await reload();
+      void reload().catch((e) => notify(errorText(e)));
       locked.current = false;
-      await move(1);
+      if (filter && result.status !== filter) {
+        const index = items.findIndex((s) => s.id === sample.id);
+        await load({ prefer: items[index + 1]?.id, index: offset + index });
+      } else await move(1);
     } catch (e) {
       notify(errorText(e));
     } finally {
@@ -211,6 +407,8 @@ export default function Review({
     if (
       !sample ||
       locked.current ||
+      loading ||
+      pendingEditRef.current ||
       !confirm(
         "确定删除整个样本？原图、标注、预览及关联导出将被删除，无法撤销。",
       )
@@ -223,7 +421,7 @@ export default function Review({
       const next = items[index + 1]?.id || items[index - 1]?.id;
       await api(`${base}/samples/${sample.id}`, { method: "DELETE" });
       locked.current = false;
-      await load(next);
+      await load({ prefer: next, index: offset + index });
       await reload();
     } catch (e) {
       notify(errorText(e));
@@ -238,6 +436,8 @@ export default function Review({
       if (
         target.closest('input,textarea,select,[contenteditable="true"]') ||
         locked.current ||
+        pendingEditRef.current ||
+        loading ||
         e.altKey
       )
         return;
@@ -279,7 +479,8 @@ export default function Review({
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   });
-  const current = sample?.objects.find((o) => o.id === selected);
+  const visibleObjects = pendingEdit?.objects ?? sample?.objects ?? [];
+  const current = visibleObjects.find((o) => o.id === selected);
   return (
     <>
       <div className="page-head compact">
@@ -289,6 +490,18 @@ export default function Review({
           <p>
             {dataset.name} · {total} 张图片
           </p>
+          <p aria-label="审核位置" aria-live="polite">
+            {loading
+              ? "正在读取审核图片…"
+              : sample
+                ? `第 ${sampleIndex + 1} / ${total} 张（当前筛选）`
+                : "当前筛选没有图片"}
+            {remembered && " · 已记住位置和选项（当前浏览器）"}
+          </p>
+          {resumeMessage && <small role="status">{resumeMessage}</small>}
+          {sample && (
+            <small>图片：{String(sample.source.filename || sample.id)}</small>
+          )}
         </div>
       </div>
       <div className="review-layout">
@@ -296,9 +509,9 @@ export default function Review({
           <select
             aria-label="审核状态筛选"
             value={filter}
+            disabled={blocked}
             onChange={(e) => {
-              setFilter(e.target.value);
-              setOffset(0);
+              void load({ filter: e.target.value, offset: 0, index: 0 });
             }}
           >
             <option value="">全部状态</option>
@@ -310,9 +523,10 @@ export default function Review({
           </select>
           {items.map((s, i) => (
             <button
-              disabled={busy}
+              disabled={blocked}
               className={s.id === sample?.id ? "selected" : ""}
               key={s.id}
+              ref={s.id === sample?.id ? selectedThumbnail : undefined}
               onClick={() => void choose(s.id)}
             >
               <img
@@ -328,14 +542,16 @@ export default function Review({
           ))}
           <div className="actions">
             <button
-              disabled={!offset || busy}
-              onClick={() => setOffset(Math.max(0, offset - 100))}
+              disabled={!offset || blocked}
+              onClick={() =>
+                void load({ offset: Math.max(0, offset - PAGE_SIZE) })
+              }
             >
               上一页
             </button>
             <button
-              disabled={offset + 100 >= total || busy}
-              onClick={() => setOffset(offset + 100)}
+              disabled={offset + PAGE_SIZE >= total || blocked}
+              onClick={() => void load({ offset: offset + PAGE_SIZE })}
             >
               下一页
             </button>
@@ -347,7 +563,7 @@ export default function Review({
               {dataset.task_type === "detection" && (
                 <>
                   <button
-                    disabled={busy || !sample}
+                    disabled={blocked || !sample}
                     className={drawing ? "primary" : ""}
                     onClick={() => {
                       setDrawing(!drawing);
@@ -356,62 +572,86 @@ export default function Review({
                   >
                     ＋ 新增框 <kbd>N</kbd>
                   </button>
-                  <button disabled={busy || !selected} onClick={removeBox}>
+                  <button disabled={blocked || !selected} onClick={removeBox}>
                     删除框 <kbd>Del</kbd>
                   </button>
-                  <button disabled={busy || !history.length} onClick={undo}>
+                  <button disabled={blocked || !history.length} onClick={undo}>
                     撤销
                   </button>
                 </>
               )}
             </div>
-            <span className="muted">
+            <span className="muted" role="status" aria-live="polite">
               {sample && `${sample.width} × ${sample.height}`} · {saveText}
             </span>
           </div>
+          {pendingEdit && saveError && (
+            <div className="error" role="alert">
+              <div>本次修改尚未保存，请重试。{saveError}</div>
+              <div className="actions">
+                <button
+                  disabled={busy}
+                  onClick={() => void saveEdit(pendingEdit)}
+                >
+                  重试保存
+                </button>
+                <button disabled={busy} onClick={() => void discardEdit()}>
+                  放弃修改并重新读取
+                </button>
+              </div>
+            </div>
+          )}
           {sample ? (
             <AnnotationCanvas
               url={sample.image_url}
               width={sample.width}
               height={sample.height}
-              objects={sample.objects}
+              objects={visibleObjects}
               selected={selected}
               onSelect={setSelected}
               onChange={changeBox}
               onAdd={addBox}
               drawing={drawing}
-              disabled={busy}
+              disabled={blocked}
               cancelToken={cancelToken}
             />
           ) : (
-            <div className="preview-stage">暂无图片，请先导入或采集。</div>
+            <div className="preview-stage">
+              {loading ? "正在恢复审核位置…" : "暂无图片，请先导入或采集。"}
+            </div>
           )}
           <div className="review-footer">
             <div className="actions">
-              <button disabled={busy || !sample} onClick={() => void move(-1)}>
+              <button
+                disabled={blocked || !sample}
+                onClick={() => void move(-1)}
+              >
                 ← 上一张
               </button>
-              <button disabled={busy || !sample} onClick={() => void move(1)}>
+              <button
+                disabled={blocked || !sample}
+                onClick={() => void move(1)}
+              >
                 下一张 →
               </button>
             </div>
             <div className="actions">
               <button
                 className="danger"
-                disabled={busy || !sample}
+                disabled={blocked || !sample}
                 onClick={() => void removeSample()}
               >
                 删除样本
               </button>
               <button
-                disabled={busy || !sample}
+                disabled={blocked || !sample}
                 onClick={() => void status(false)}
               >
                 拒绝
               </button>
               <button
                 className="primary"
-                disabled={busy || !sample}
+                disabled={blocked || !sample}
                 onClick={() => void status(true)}
               >
                 确认并下一张 ↵
@@ -429,7 +669,7 @@ export default function Review({
                   : "样本信息"}
             </strong>
             {dataset.task_type === "detection" && (
-              <span>{sample?.objects.length ?? 0}</span>
+              <span>{visibleObjects.length}</span>
             )}
           </div>
           {sample && (
@@ -444,7 +684,7 @@ export default function Review({
                 <select
                   aria-label="当前框类别"
                   value={current?.class_id ?? classId}
-                  disabled={busy}
+                  disabled={blocked}
                   onChange={(e) => pickClass(Number(e.target.value))}
                 >
                   {dataset.classes.map((c, i) => (
@@ -456,12 +696,13 @@ export default function Review({
                 </select>
               </label>
               <div className="objects">
-                {sample?.objects.map((obj, i) => (
+                {visibleObjects.map((obj, i) => (
                   <button
                     key={obj.id}
                     className={
                       selected === obj.id ? "object selected" : "object"
                     }
+                    disabled={blocked}
                     onClick={() => setSelected(obj.id)}
                   >
                     <span
@@ -488,12 +729,12 @@ export default function Review({
                 ))}
               </div>
               <AutoLabel
+                classes={dataset.classes}
+                key={dataset.id}
                 datasetId={dataset.id}
+                disabled={blocked}
                 sampleId={sample?.id}
-                onDone={() => {
-                  if (sample) void choose(sample.id);
-                  void reload();
-                }}
+                onDone={() => refreshCurrent.current()}
                 notify={notify}
               />
             </>
@@ -503,9 +744,12 @@ export default function Review({
               {dataset.classes.map((c, i) => (
                 <button
                   key={c.id}
-                  disabled={busy || !sample}
+                  disabled={blocked || !sample}
                   className={
-                    sample?.classification?.class_id === c.id ? "primary" : ""
+                    (pendingEdit?.classification ?? sample?.classification)
+                      ?.class_id === c.id
+                      ? "primary"
+                      : ""
                   }
                   onClick={() => pickClass(c.id)}
                 >

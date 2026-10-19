@@ -5,8 +5,9 @@ dist/
 .env
 config/*
 !config/example.env
-datasets/*
+/datasets
 models/*
 *.log
 *.tsbuildinfo
 .ruff_cache/
+.codegraph/

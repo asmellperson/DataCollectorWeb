@@ -3,7 +3,7 @@ from pathlib import Path
 from uuid import uuid4
 import cv2
 import numpy as np
-from sqlalchemy import select, func
+from sqlalchemy import select, func, and_, or_
 from app.core.storage import atomic_bytes, read_json, write_json, dataset_lock, require
 from app.db.database import Session, Sample, now
 from app.services import dataset_service as datasets
@@ -50,13 +50,35 @@ def urls(dataset_id, data):
     }
 
 
-def list_samples(dataset_id, status=None, offset=0, limit=100):
+def list_samples(dataset_id, status=None, offset=0, limit=100, anchor_id=None):
     datasets.folder(dataset_id)
     with Session() as db:
         where = [Sample.dataset_id == dataset_id]
         if status:
             where.append(Sample.status == status)
         total = db.scalar(select(func.count()).select_from(Sample).where(*where))
+        anchor_index = None
+        if anchor_id:
+            anchor = db.scalar(select(Sample).where(*where, Sample.id == anchor_id))
+            if anchor:
+                anchor_index = db.scalar(
+                    select(func.count())
+                    .select_from(Sample)
+                    .where(
+                        *where,
+                        or_(
+                            Sample.created_at < anchor.created_at,
+                            and_(
+                                Sample.created_at == anchor.created_at,
+                                Sample.id < anchor.id,
+                            ),
+                        ),
+                    )
+                )
+                offset = (anchor_index // limit) * limit
+        # Deletions or a changed filter can shrink the remembered page.
+        if offset >= total:
+            offset = ((max(total, 1) - 1) // limit) * limit
         rows = db.scalars(
             select(Sample)
             .where(*where)
@@ -71,7 +93,13 @@ def list_samples(dataset_id, status=None, offset=0, limit=100):
             )
             for s in rows
         ]
-    return {"items": items, "total": total, "offset": offset, "limit": limit}
+    return {
+        "items": items,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "anchor_index": anchor_index,
+    }
 
 
 def save_sample(
@@ -125,17 +153,29 @@ def save_sample(
         return ann
 
 
-def import_paths(dataset_id, paths, progress, options=None):
+def import_paths(dataset_id, paths, progress, options=None, imported_labels=None):
     from app.inference import manager
     from app.services.task_service import Cancelled
+    from app.services import label_import_service as labels
 
     progress.update(total=len(paths))
     provider = options.auto_label if options else "off"
     dataset = datasets.get(dataset_id)
+    mapping = None
+    if options and options.source_classes is not None:
+        require(
+            provider == "off" and imported_labels is not None, "已有标签导入参数不完整"
+        )
+        mapping = labels.resolve_mapping(
+            dataset,
+            [c.model_dump() for c in options.source_classes],
+            options.import_class_mapping,
+        )
     if provider != "off":
+        classes = datasets.label_classes(dataset, options)
         # 模型只加载一次；初始化失败及时结束，避免每张图重复加载。
         with manager.lock:
-            manager.get(provider, options.model_path).set_classes(dataset["classes"])
+            manager.get(provider, options.model_path).set_classes(classes)
     labeled = 0
     last_sample_id = None
     for path, source_name in paths:
@@ -144,11 +184,25 @@ def import_paths(dataset_id, paths, progress, options=None):
             data = path.read_bytes()
             image = read_image(path)
             objects = None
+            source = {"type": "image", "filename": source_name}
+            if mapping is not None:
+                key = labels.label_name(source_name)
+                boxes = imported_labels.get(key)
+                source.update(
+                    label_format="yolo",
+                    label_filename=key if boxes is not None else None,
+                    label_status="missing"
+                    if boxes is None
+                    else ("labeled" if boxes else "empty"),
+                )
+                objects = labels.to_objects(
+                    boxes or [], mapping, image.shape[1], image.shape[0]
+                )
             if provider != "off":
                 objects = manager.predict(
                     provider,
                     options.model_path,
-                    dataset["classes"],
+                    classes,
                     image,
                     options.confidence,
                 )
@@ -156,13 +210,15 @@ def import_paths(dataset_id, paths, progress, options=None):
             ann = save_sample(
                 dataset_id,
                 image,
-                {"type": "image", "filename": source_name},
+                source,
                 data,
                 path.suffix.lower(),
                 objects=objects,
             )
             last_sample_id = ann["id"]
-            labeled += int(provider != "off")
+            labeled += int(
+                provider != "off" or (mapping is not None and boxes is not None)
+            )
             progress.advance()
         except Cancelled:
             raise
@@ -228,27 +284,30 @@ def render_preview(image, ann):
     return cv2.cvtColor(np.asarray(canvas), cv2.COLOR_RGB2BGR)
 
 
-def persist(dataset_id, ann):
+def persist(dataset_id, ann, *, update_preview=True):
     with dataset_lock(dataset_id), Session() as db:
         root = datasets.folder(dataset_id)
         row = db.get(Sample, ann["id"])
         require(row and row.dataset_id == dataset_id, "样本不存在", 404)
-        image = read_image(root / ann["image"])
         ann["revision"] = ann.get("revision", 0) + 1
-        preview = encode(render_preview(image, ann))
+        if update_preview:
+            image = read_image(root / ann["image"])
+            preview = encode(render_preview(image, ann))
         old = read_json(root / "annotations" / f"{ann['id']}.json")
         try:
             write_json(root / "annotations" / f"{ann['id']}.json", ann)
-            atomic_bytes(root / "previews" / f"{ann['id']}.jpg", preview)
+            if update_preview:
+                atomic_bytes(root / "previews" / f"{ann['id']}.jpg", preview)
             row.status = ann["status"]
             db.commit()
         except Exception:
             db.rollback()
             write_json(root / "annotations" / f"{ann['id']}.json", old)
-            atomic_bytes(
-                root / "previews" / f"{ann['id']}.jpg",
-                encode(render_preview(image, old)),
-            )
+            if update_preview:
+                atomic_bytes(
+                    root / "previews" / f"{ann['id']}.jpg",
+                    encode(render_preview(image, old)),
+                )
             raise
         return urls(dataset_id, ann)
 
@@ -258,6 +317,8 @@ def auto_label(dataset_id, options, progress):
 
     dataset = datasets.get(dataset_id)
     require(dataset["task_type"] == "detection", "自动预标仅适用于 detection 数据集")
+    classes = datasets.label_classes(dataset, options)
+    selected_ids = {c["id"] for c in classes}
     with Session() as db:
         query = select(Sample.id).where(
             Sample.dataset_id == dataset_id, Sample.status == "pending"
@@ -269,25 +330,28 @@ def auto_label(dataset_id, options, progress):
     require(ids, "没有可预标的待审核样本")
     # 提前加载失败会让任务明确失败，避免数千张逐张重复加载失败。
     with manager.lock:
-        manager.get(options.provider, options.model_path).set_classes(
-            dataset["classes"]
-        )
+        manager.get(options.provider, options.model_path).set_classes(classes)
     for sid in ids:
         progress.check()
         try:
             with dataset_lock(dataset_id):
                 ann = get(dataset_id, sid)
                 if ann["status"] != "pending" or (
-                    ann["objects"] and not options.overwrite
+                    (
+                        any(o["class_id"] in selected_ids for o in ann["objects"])
+                        or ann.get("source", {}).get("label_status")
+                        in ("labeled", "empty")
+                    )
+                    and not options.overwrite
                 ):
-                    progress.advance("已跳过：样本含已有标注，默认保留")
+                    progress.advance(skipped=True)
                     continue
                 revision = ann["revision"]
                 image = read_image(datasets.folder(dataset_id) / ann["image"])
             objects = manager.predict(
                 options.provider,
                 options.model_path,
-                dataset["classes"],
+                classes,
                 image,
                 options.confidence,
             )
@@ -299,7 +363,10 @@ def auto_label(dataset_id, options, progress):
                     "样本在推理期间被修改，已保留人工修改",
                     409,
                 )
-                current.update(objects=objects, status="pending")
+                retained = [
+                    o for o in current["objects"] if o["class_id"] not in selected_ids
+                ]
+                current.update(objects=retained + objects, status="pending")
                 persist(dataset_id, current)
             progress.advance()
         except Exception as exc:
@@ -395,7 +462,7 @@ def set_status(dataset_id, sample_id, status):
         ):
             require(ann.get("classification"), "请先选择图像类别")
         ann["status"] = status
-        return persist(dataset_id, ann)
+        return persist(dataset_id, ann, update_preview=False)
 
 
 def delete_sample(dataset_id, sample_id):

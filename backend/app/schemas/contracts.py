@@ -1,5 +1,9 @@
-from typing import Literal
-from pydantic import BaseModel, Field, ConfigDict, model_validator
+from typing import Annotated, Literal
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
+
+ClassIds = Annotated[
+    list[Annotated[int, Field(strict=True, ge=0, le=9999)]], Field(min_length=1)
+]
 
 
 class Contract(BaseModel):
@@ -23,7 +27,24 @@ class DatasetUpdate(Contract):
     classes: list[ClassItem]
 
 
-class LabelOptions(Contract):
+class LabelSelection(Contract):
+    label_class_ids: ClassIds | None = None
+    # Dataset class ID -> one or more detector IDs. Omitted entries match by name.
+    label_class_mapping: dict[
+        Annotated[int, Field(ge=0, le=9999)],
+        Annotated[int, Field(strict=True, ge=0, le=9999)] | ClassIds,
+    ] = Field(default_factory=dict)
+
+    @field_validator("label_class_mapping")
+    @classmethod
+    def unique_sources(cls, mapping):
+        return {
+            key: list(dict.fromkeys(value)) if isinstance(value, list) else value
+            for key, value in mapping.items()
+        }
+
+
+class LabelOptions(LabelSelection):
     provider: Literal["yolo_world", "custom_yolo"] = "yolo_world"
     model_path: str | None = None
     confidence: float = Field(default=0.25, gt=0, le=1)
@@ -61,7 +82,7 @@ class CameraEdit(Contract):
     transport: Literal["tcp", "udp"] = "tcp"
 
 
-class CollectionStart(Contract):
+class CollectionStart(LabelSelection):
     dataset_id: str
     camera_id: str
     mode: Literal["raw_interval", "roi_interval", "detect_raw", "detect_crop"] = (
@@ -72,13 +93,22 @@ class CollectionStart(Contract):
     auto_label: Literal["off", "yolo_world", "custom_yolo"] = "off"
     detector: Literal["yolo_world", "custom_yolo"] = "yolo_world"
     model_path: str | None = None
+    trigger_model_path: str | None = None
     confidence: float = Field(default=0.25, gt=0, le=1)
     similarity: float = Field(default=0.92, ge=0, le=1)
     target_classes: list[str] = Field(default_factory=lambda: ["person"], min_length=1)
     infer_interval: float = Field(default=0.5, ge=0.1, le=60)
 
+    @field_validator("target_classes")
+    @classmethod
+    def check_targets(cls, values):
+        values = [value.strip() for value in values]
+        if any(not value for value in values):
+            raise ValueError("触发目标不能为空")
+        return list(dict.fromkeys(values))
 
-class VideoOptions(Contract):
+
+class VideoOptions(LabelSelection):
     path: str = ""
     sampling: Literal["frames", "seconds"] = "frames"
     every: float = Field(default=30, gt=0, le=1000000)
@@ -95,10 +125,28 @@ class VideoOptions(Contract):
         return self
 
 
-class ImageImportOptions(Contract):
+class ImageImportOptions(LabelSelection):
     auto_label: Literal["off", "yolo_world", "custom_yolo"] = "off"
     model_path: str | None = None
     confidence: float = Field(default=0.25, gt=0, le=1)
+    source_classes: list[ClassItem] | None = None
+    import_class_mapping: dict[
+        Annotated[int, Field(ge=0, le=9999)],
+        Annotated[int, Field(strict=True, ge=0, le=9999)],
+    ] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def check_import_mode(self):
+        if self.source_classes is not None and self.auto_label != "off":
+            raise ValueError("导入已有标签时不能自动标注")
+        return self
+
+
+class LabelImportPreview(Contract):
+    image_names: list[str] = Field(min_length=1, max_length=100000)
+    labels: dict[str, str]
+    classes_text: str = Field(default="", max_length=1024 * 1024)
+    yaml_text: str = Field(default="", max_length=1024 * 1024)
 
 
 class ExportOptions(Contract):
@@ -108,6 +156,8 @@ class ExportOptions(Contract):
     test_ratio: float = Field(default=0, ge=0, le=1)
     include_pending: bool = False
     seed: int = 42
+    class_ids: ClassIds | None = None
+    include_empty: bool = True
 
     @model_validator(mode="after")
     def check_split(self):

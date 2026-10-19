@@ -4,7 +4,12 @@ export default defineConfig({
   plugins: [react()],
   build: {
     rollupOptions: {
-      output: { manualChunks: { konva: ["konva", "react-konva"] } },
+      output: {
+        manualChunks: {
+          react: ["react", "react-dom", "react-dom/client"],
+          konva: ["konva", "react-konva"],
+        },
+      },
     },
   },
   server: {

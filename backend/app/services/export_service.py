@@ -1,3 +1,4 @@
+import copy
 import random
 import re
 import shutil
@@ -5,7 +6,7 @@ import zipfile
 from datetime import datetime
 from uuid import uuid4
 import yaml
-from sqlalchemy import func, select
+from sqlalchemy import select
 from app.core.storage import write_json, dataset_lock, require
 from app.db.database import Session, Sample
 from app.services import dataset_service as datasets, annotation_service as annotations
@@ -50,16 +51,38 @@ def split_plan(total, options):
     }
 
 
+def selected_snapshot(dataset_id, dataset, options, db):
+    classes = datasets.selected_classes(dataset, options.class_ids)
+    selected = {c["id"] for c in classes}
+    statuses = ["approved", "pending"] if options.include_pending else ["approved"]
+    ids = db.scalars(
+        select(Sample.id)
+        .where(Sample.dataset_id == dataset_id, Sample.status.in_(statuses))
+        .order_by(Sample.id)
+    ).all()
+    snapshot = []
+    for sid in ids:
+        ann = annotations.get(dataset_id, sid)
+        if dataset["task_type"] == "detection":
+            ann["objects"] = [o for o in ann["objects"] if o["class_id"] in selected]
+            if not options.include_empty and not ann["objects"]:
+                continue
+        elif dataset["task_type"] == "classification":
+            cls = ann.get("classification")
+            if options.class_ids is not None and (
+                not cls or cls["class_id"] not in selected
+            ):
+                continue
+            require(cls, "分类导出包含尚未选择类别的图片，请完成分类")
+        snapshot.append(ann)
+    return classes, statuses, snapshot
+
+
 def preview(dataset_id, options):
     with dataset_lock(dataset_id), Session() as db:
-        datasets.folder(dataset_id)
-        statuses = ["approved", "pending"] if options.include_pending else ["approved"]
-        total = db.scalar(
-            select(func.count())
-            .select_from(Sample)
-            .where(Sample.dataset_id == dataset_id, Sample.status.in_(statuses))
-        )
-    return split_plan(total, options)
+        dataset = datasets.get(dataset_id)
+        _, _, snapshot = selected_snapshot(dataset_id, dataset, options, db)
+    return split_plan(len(snapshot), options)
 
 
 def export(dataset_id, options, progress, yolo=False):
@@ -69,21 +92,24 @@ def export(dataset_id, options, progress, yolo=False):
             not yolo or dataset["task_type"] == "detection",
             "YOLO Detect 导出只支持 detection 数据集",
         )
-        statuses = ["approved", "pending"] if options.include_pending else ["approved"]
-        ids = list(
-            db.scalars(
-                select(Sample.id)
-                .where(Sample.dataset_id == dataset_id, Sample.status.in_(statuses))
-                .order_by(Sample.id)
-            ).all()
+        classes, statuses, snapshot = selected_snapshot(
+            dataset_id, dataset, options, db
         )
-        plan = split_plan(len(ids), options)
-        snapshot = [annotations.get(dataset_id, i) for i in ids]
-    if dataset["task_type"] == "classification":
-        require(
-            all(a.get("classification") for a in snapshot),
-            "分类导出包含尚未选择类别的图片，请完成分类",
-        )
+        plan = split_plan(len(snapshot), options)
+    # Explicit training selections use dense IDs; the source dataset remains untouched.
+    mapping = {
+        c["id"]: index if options.class_ids is not None else c["id"]
+        for index, c in enumerate(classes)
+    }
+    source_classes = copy.deepcopy(dataset["classes"])
+    dataset = {**dataset, "classes": [{**c, "id": mapping[c["id"]]} for c in classes]}
+    for ann in snapshot:
+        for obj in ann["objects"]:
+            obj["class_id"] = mapping[obj["class_id"]]
+        if ann.get("classification"):
+            ann["classification"]["class_id"] = mapping[
+                ann["classification"]["class_id"]
+            ]
     rng = random.Random(options.seed)
     rng.shuffle(snapshot)
     parts = [part for part, count in plan["counts"].items() for _ in range(count)]
@@ -107,6 +133,10 @@ def export(dataset_id, options, progress, yolo=False):
                 (temp / "labels" / folder).mkdir(parents=True)
         manifest = {
             "dataset": dataset,
+            "source_classes": source_classes,
+            "class_id_mapping": mapping,
+            "selected_class_ids": options.class_ids,
+            "include_empty": options.include_empty,
             "format": "yolo_detect" if yolo else dataset["task_type"],
             "seed": options.seed,
             "statuses": statuses,
@@ -130,6 +160,7 @@ def export(dataset_id, options, progress, yolo=False):
                 )
                 output.parent.mkdir(exist_ok=True)
             shutil.copyfile(image_path, output)
+            ann["image"] = str(output.relative_to(temp))
             write_json(temp / "annotations" / f"{ann['id']}.json", ann)
             if yolo:
                 lines = []

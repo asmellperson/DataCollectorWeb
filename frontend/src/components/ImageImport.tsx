@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import type { Dataset } from "../types";
+import type { Dataset, ClassMapping } from "../types";
 import { api, errorText, formatBytes } from "../services/api";
 import ModelPicker from "./ModelPicker";
+import ClassSelector from "./ClassSelector";
+import LabelImportFields from "./LabelImportFields";
+import { useLabelImport } from "../hooks/useLabelImport";
 import {
   useImageImport,
   imageFiles,
@@ -22,18 +25,23 @@ export default function ImageImport({
   onBusyChange: (busy: boolean) => void;
 }) {
   const [location, setLocation] = useState("local");
+  const [mode, setMode] = useState<"images" | "labels">("images");
   const [files, setFiles] = useState<File[]>([]);
   const [skipped, setSkipped] = useState(0);
   const [path, setPath] = useState("");
   const [provider, setProvider] = useState<ImportOptions["auto_label"]>("off");
   const [modelPath, setModelPath] = useState("");
   const [confidence, setConfidence] = useState(0.25);
+  const [labelClasses, setLabelClasses] = useState<number[] | null>(null);
+  const [classMapping, setClassMapping] = useState<ClassMapping>({});
   const [preview, setPreview] = useState("");
   const [previewName, setPreviewName] = useState("");
   const importer = useImageImport();
-  const { busy, counts } = importer;
+  const labelImport = useLabelImport(dataset.classes.map((c) => `${c.id} ${c.name}`).join("\n"), dataset.classes);
+  const { counts } = importer;
+  const busy = importer.busy || labelImport.checking;
   const input = useRef<HTMLInputElement>(null);
-  const autoLabel = dataset.task_type === "detection" && provider !== "off";
+  const autoLabel = mode === "images" && dataset.task_type === "detection" && provider !== "off";
   useEffect(() => {
     onBusyChange(busy);
     return () => onBusyChange(false);
@@ -47,6 +55,7 @@ export default function ImageImport({
   function selectFiles(list: FileList | null) {
     const selected = imageFiles(list);
     setFiles(selected);
+    labelImport.invalidate();
     setSkipped((list?.length || 0) - selected.length);
     importer.reset();
     setPreview(selected.length ? URL.createObjectURL(selected[0]) : "");
@@ -55,16 +64,18 @@ export default function ImageImport({
   }
 
   async function start() {
-    const result = await importer.runImport(
-      dataset,
-      location === "local" ? { files } : { path },
-      {
-        auto_label: autoLabel ? provider : "off",
-        model_path: modelPath || null,
-        confidence,
-      },
-    );
     try {
+      const result = await importer.runImport(
+        dataset,
+        location === "local" ? { files, annotations: mode === "labels" ? labelImport.data() : undefined } : { path },
+        {
+          auto_label: autoLabel ? provider : "off",
+          model_path: modelPath || null,
+          confidence,
+          label_class_ids: labelClasses,
+          label_class_mapping: classMapping,
+        },
+      );
       await reload();
       if (result.lastSample) {
         const sample = await api(
@@ -72,7 +83,7 @@ export default function ImageImport({
         );
         setPreview(sample.preview_url);
         setPreviewName(
-          autoLabel ? "自动标注结果预览 · 等待人工审核" : "导入结果预览",
+          autoLabel || mode === "labels" ? "标注预览 · 待审核" : "导入结果预览",
         );
       }
     } catch (error) {
@@ -83,23 +94,27 @@ export default function ImageImport({
   return (
     <div className="collection-layout image-import-layout">
       <section className="panel import-main">
-        <h2>图片目录导入与自动标注</h2>
-        <p>选择目录 → 设置自动标注 → 开始导入 → 人工审核</p>
+        <h2>导入数据</h2>
         <fieldset disabled={busy}>
-          <div className="source-tabs" role="group" aria-label="图片目录位置">
-            <button
-              className={location === "local" ? "primary" : ""}
-              onClick={() => setLocation("local")}
-            >
-              本地图片目录
-            </button>
-            <button
-              className={location === "server" ? "primary" : ""}
-              onClick={() => setLocation("server")}
-            >
-              服务器图片目录
-            </button>
-          </div>
+          {dataset.task_type === "detection" && <div className="source-tabs" role="group" aria-label="导入方式">
+            <button className={mode === "images" ? "primary" : ""} onClick={() => { setMode("images"); importer.reset(); }}>仅图片</button>
+            <button className={mode === "labels" ? "primary" : ""} onClick={() => { setMode("labels"); setLocation("local"); importer.reset(); }}>图片 + 标签</button>
+          </div>}
+          {mode === "images" &&
+            <div className="source-tabs" role="group" aria-label="图片目录位置">
+              <button
+                className={location === "local" ? "primary" : ""}
+                onClick={() => setLocation("local")}
+              >
+                本地图片目录
+              </button>
+              <button
+                className={location === "server" ? "primary" : ""}
+                onClick={() => setLocation("server")}
+              >
+                服务器图片目录
+              </button>
+            </div>}
           {location === "local" ? (
             <div className="directory-picker">
               <input
@@ -121,11 +136,11 @@ export default function ImageImport({
                 <strong>
                   {files.length
                     ? `${files.length} 张图片 · ${formatBytes(files.reduce((sum, file) => sum + file.size, 0))}`
-                    : "选择电脑中的整个图片文件夹"}
+                    : "未选择图片"}
                 </strong>
                 <p>
                   {files[0]?.webkitRelativePath.split("/")[0] ||
-                    "支持 JPG、JPEG、PNG、BMP、WebP，包含子目录"}
+                    "JPG / PNG / BMP / WebP"}
                   {skipped > 0 && ` · 已忽略 ${skipped} 个非图片文件`}
                 </p>
               </div>
@@ -138,7 +153,6 @@ export default function ImageImport({
                 value={path}
                 onChange={(event) => setPath(event.target.value)}
               />
-              <small>直接从服务器复制，无需经过浏览器上传。</small>
             </label>
           )}
         </fieldset>
@@ -147,8 +161,10 @@ export default function ImageImport({
             className="primary"
             disabled={
               busy ||
+              (mode === "labels" && !labelImport.ready) ||
               (location === "local" ? !files.length : !path.trim()) ||
-              (autoLabel && provider === "custom_yolo" && !modelPath.trim())
+              (autoLabel && provider === "custom_yolo" && !modelPath.trim()) ||
+              (autoLabel && labelClasses?.length === 0)
             }
             onClick={() => void start()}
           >
@@ -156,16 +172,13 @@ export default function ImageImport({
               ? "正在处理…"
               : autoLabel
                 ? "开始导入并自动标注"
-                : "开始导入图片"}
+                : "开始导入"}
           </button>
-          {busy && <button onClick={importer.cancel}>停止导入</button>}
+          {importer.busy && <button onClick={importer.cancel}>停止导入</button>}
           {!busy && counts.success > 0 && (
-            <button onClick={onReview}>查看图片 / 标注审核 →</button>
+            <button onClick={onReview}>标注审核 →</button>
           )}
         </div>
-        <p className="import-hint">
-          大目录分批上传，每批最多 50 张或约 32 MB；原图按原始分辨率保存。
-        </p>
         <ImportProgress importer={importer} />
         <div className="import-preview">
           {preview ? (
@@ -173,7 +186,7 @@ export default function ImageImport({
               <div className="preview-stage">
                 <img src={preview} alt="目录图片预览" />
               </div>
-              <p>{previewName} · 自适应窗口</p>
+              <p>{previewName}</p>
             </>
           ) : (
             <div className="preview-stage">
@@ -184,10 +197,9 @@ export default function ImageImport({
       </section>
       <section className="panel controls import-settings">
         <h3>导入设置</h3>
-        <p>目标数据集</p>
         <strong>{dataset.name}</strong>
         <fieldset disabled={busy}>
-          {dataset.task_type === "detection" ? (
+          {mode === "labels" ? <LabelImportFields value={labelImport} images={files} targets={dataset.classes} /> : dataset.task_type === "detection" ? (
             <>
               <label>
                 导入时自动标注
@@ -227,11 +239,15 @@ export default function ImageImport({
                   />
                 </label>
               )}
-              <p>
-                {autoLabel
-                  ? "导入过程中逐张自动标框，结果进入待审核。"
-                  : "选择上方 YOLO-World，即可在导入时自动标框。"}
-              </p>
+              {autoLabel && (
+                <ClassSelector
+                  modelClassIds={classMapping}
+                  onModelClassIdsChange={setClassMapping}
+                  classes={dataset.classes}
+                  value={labelClasses}
+                  onChange={setLabelClasses}
+                />
+              )}
               <h4>当前数据集类别</h4>
               <div className="class-tags">
                 {dataset.classes.map((item) => (
@@ -249,10 +265,6 @@ export default function ImageImport({
             </p>
           )}
         </fieldset>
-        <div className="import-tip">
-          <strong>图片已经在服务器上？</strong>
-          <p>选择“服务器图片目录”，填写目录路径即可导入，省去浏览器上传。</p>
-        </div>
         <button className="review-link" disabled={busy} onClick={onReview}>
           进入标注审核
         </button>

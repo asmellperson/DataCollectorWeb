@@ -40,10 +40,12 @@ def inspect(body: InspectModel):
 
 @router.post("/api/datasets/{dataset_id}/auto-label")
 def auto_label(dataset_id: str, body: LabelOptions):
+    dataset = datasets.get(dataset_id)
     require(
-        datasets.get(dataset_id)["task_type"] == "detection",
+        dataset["task_type"] == "detection",
         "自动预标仅适用于 detection 数据集",
     )
+    datasets.label_classes(dataset, body)
     manager.resolve(body.provider, body.model_path)
     return tasks.submit(
         "auto_label", dataset_id, lambda p: annotations.auto_label(dataset_id, body, p)

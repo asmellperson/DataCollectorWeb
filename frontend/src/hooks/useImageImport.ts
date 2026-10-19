@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import type { Dataset } from "../types";
+import type { Dataset, ClassMapping } from "../types";
+import { serializeClassMapping } from "../services/classMapping";
+import { appendImportFiles, type LabelImportData } from "../services/labelImport";
 import {
   api,
   post,
@@ -12,6 +14,8 @@ export type ImportOptions = {
   auto_label: "off" | "yolo_world" | "custom_yolo";
   model_path: string | null;
   confidence: number;
+  label_class_ids?: number[] | null;
+  label_class_mapping?: ClassMapping;
 };
 type Counts = {
   total: number;
@@ -22,7 +26,7 @@ type Counts = {
 type ImportTask = Counts & {
   status: string;
   error: string;
-  result?: { last_sample_id?: string };
+  result?: { last_sample_id?: string; };
 };
 const emptyCounts: Counts = { total: 0, processed: 0, success: 0, failed: 0 };
 export const defaultImportOptions: ImportOptions = {
@@ -122,13 +126,14 @@ export function useImageImport() {
   }
   async function runImport(
     dataset: Dataset,
-    source: { files: File[] } | { path: string },
+    source: { files: File[]; annotations?: LabelImportData; } | { path: string; },
     options = defaultImportOptions,
   ) {
     if (controller.current) throw new Error("已有导入任务正在执行");
     const total = "files" in source ? source.files.length : 0;
+    const annotations = "files" in source ? source.annotations : undefined;
     const auto =
-      dataset.task_type === "detection" && options.auto_label !== "off";
+      !annotations && dataset.task_type === "detection" && options.auto_label !== "off";
     const abort = new AbortController();
     controller.current = abort;
     setBusy(true);
@@ -137,10 +142,21 @@ export function useImageImport() {
     setIssue("");
     setTransfer(null);
     setBatchLabel("");
-    const body = { ...options, auto_label: auto ? options.auto_label : "off" };
-    const processing = auto ? "正在导入并自动标注" : "正在保存图片";
+    const processing = annotations ? "正在导入图片和标签" : auto ? "正在导入并自动标注" : "正在保存图片";
     let lastSample = "";
     try {
+      const body = {
+        ...options,
+        source_classes: annotations?.classes ?? null,
+        import_class_mapping: annotations?.mapping ?? {},
+        auto_label: auto ? options.auto_label : "off",
+        label_class_mapping: auto
+          ? serializeClassMapping(
+            options.label_class_mapping,
+            options.label_class_ids,
+          )
+          : {},
+      };
       if ("path" in source) {
         setPhase("正在扫描服务器目录");
         const result = await post(`/datasets/${dataset.id}/images/import`, {
@@ -168,9 +184,7 @@ export function useImageImport() {
           setTransfer({ loaded: 0, total: null });
           const form = new FormData();
           form.append("options", JSON.stringify(body));
-          group.forEach((file) =>
-            form.append("files", file, file.webkitRelativePath || file.name),
-          );
+          appendImportFiles(form, group, annotations);
           const result = await uploadForm(
             `/datasets/${dataset.id}/images/upload`,
             form,

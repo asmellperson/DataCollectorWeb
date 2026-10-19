@@ -11,6 +11,7 @@ from app.api import (
     collection,
     videos,
     exports,
+    security_annotation,
 )
 from app.services.task_service import recover
 from contextlib import asynccontextmanager
@@ -19,11 +20,18 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def lifespan(app):
     recover()
+    from app.services.security_annotation import (
+        store as inspection_store,
+        recorder as inspection_recorder,
+    )
+
+    inspection_store.recover()
     yield
     from app.services import camera_service, collection_service
 
     collection_service.stop()
     camera_service.shutdown()
+    inspection_recorder.shutdown()
     from app.services.task_service import shutdown
 
     shutdown()
@@ -42,6 +50,7 @@ app.include_router(cameras.router)
 app.include_router(collection.router)
 app.include_router(videos.router)
 app.include_router(exports.router)
+app.include_router(security_annotation.router)
 
 
 @app.get("/api/health")

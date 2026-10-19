@@ -22,6 +22,34 @@ def validate_classes(classes, task_type):
     require(all(c["name"].strip() for c in classes), "类别名称不得为空")
 
 
+def selected_classes(dataset, class_ids):
+    """None keeps the legacy all-class behavior; an explicit selection is nonempty."""
+    if class_ids is None:
+        return dataset["classes"]
+    require(dataset["task_type"] != "raw", "raw 数据集不支持类别选择")
+    require(class_ids, "请至少选择一个类别")
+    require(len(set(class_ids)) == len(class_ids), "所选类别 ID 不得重复")
+    known = {c["id"] for c in dataset["classes"]}
+    require(set(class_ids) <= known, "所选类别已不存在，请刷新数据集类别")
+    return [c for c in dataset["classes"] if c["id"] in class_ids]
+
+
+def label_classes(dataset, options):
+    classes = selected_classes(dataset, options.label_class_ids)
+    mapping = options.label_class_mapping
+    known = {c["id"] for c in dataset["classes"]}
+    require(set(mapping) <= known, "标注映射包含不存在的数据集类别，请刷新类别配置")
+    resolved = []
+    for cls in classes:
+        item = dict(cls)
+        if cls["id"] in mapping:
+            sources = mapping[cls["id"]]
+            key = "model_class_ids" if isinstance(sources, list) else "model_class_id"
+            item[key] = sources
+        resolved.append(item)
+    return resolved
+
+
 def get(dataset_id):
     root = folder(dataset_id)
     data = read_json(root / "dataset.json")

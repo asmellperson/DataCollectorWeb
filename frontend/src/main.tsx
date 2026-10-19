@@ -1,26 +1,46 @@
-import React, { useEffect, useState } from "react";
+import React, { lazy, Suspense, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Dataset, Page } from "./types";
 import { api, errorText } from "./services/api";
-import Datasets from "./pages/Datasets";
-import Collection from "./pages/Collection";
-import Cameras from "./pages/Cameras";
-import Review from "./pages/Review";
+const Datasets = lazy(() => import("./pages/Datasets"));
+const Collection = lazy(() => import("./pages/Collection"));
+const Cameras = lazy(() => import("./pages/Cameras"));
+const Review = lazy(() => import("./pages/Review"));
+const Statistics = lazy(() => import("./pages/Statistics"));
+const SecurityAnnotation = lazy(() => import("./pages/SecurityAnnotation"));
 import "./styles.css";
+import {
+  readWorkspacePreferences,
+  writePreference,
+} from "./services/preferences";
 function App() {
+  const [saved] = useState(readWorkspacePreferences);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
-  const [page, setPage] = useState<Page>("datasets");
-  const [selected, setSelected] = useState("");
+  const [page, setPage] = useState<Page>(saved.page);
+  const [selected, setSelected] = useState(saved.selected);
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
   const [healthy, setHealthy] = useState(false);
   const [navigationLocked, setNavigationLocked] = useState(false);
+  const [reviewSampleId, setReviewSampleId] = useState<string | null>(null);
   async function reload() {
     const data = await api<Dataset[]>("/datasets");
     setDatasets(data);
     setSelected((id) =>
       data.some((d) => d.id === id) ? id : data[0]?.id || "",
     );
+    if (
+      !loaded &&
+      saved.selected &&
+      !data.some((d) => d.id === saved.selected) &&
+      ["review", "collection", "statistics"].includes(saved.page)
+    )
+      setPage("datasets");
+    setLoaded(true);
   }
+  useEffect(() => {
+    if (loaded) writePreference("", "workspace", { page, selected });
+  }, [loaded, page, selected]);
   useEffect(() => {
     reload().catch((e) => setError(errorText(e)));
     api("/health")
@@ -29,6 +49,8 @@ function App() {
   }, []);
   const dataset = datasets.find((d) => d.id === selected);
   function navigate(p: Page, id: string) {
+    if (navigationLocked) return;
+    setReviewSampleId(null);
     setSelected(id);
     setPage(p);
   }
@@ -48,14 +70,16 @@ function App() {
               ["datasets", "▦", "数据集"],
               ["collection", "◉", "数据采集"],
               ["review", "⌘", "标注审核"],
+              ["statistics", "▥", "数据统计"],
               ["cameras", "▣", "摄像头"],
+              ["security-annotation", "▷", "安检视频标注"],
             ] as const
           ).map(([key, icon, label]) => (
             <button
               className={page === key ? "active" : ""}
               key={key}
               disabled={navigationLocked && page !== key}
-              onClick={() => setPage(key)}
+              onClick={() => navigate(key, selected)}
             >
               <span>{icon}</span>
               {label}
@@ -80,13 +104,13 @@ function App() {
               <button onClick={() => setError("")}>关闭</button>
             </div>
           )}
-          {page !== "datasets" && page !== "cameras" && (
+          {page !== "datasets" && page !== "cameras" && page !== "security-annotation" && (
             <div className="dataset-picker">
               <span>目标数据集</span>
               <select
                 disabled={navigationLocked}
                 value={selected}
-                onChange={(e) => setSelected(e.target.value)}
+                onChange={(e) => navigate(page, e.target.value)}
               >
                 {datasets.map((d) => (
                   <option value={d.id} key={d.id}>
@@ -96,37 +120,52 @@ function App() {
               </select>
             </div>
           )}
-          {page === "datasets" ? (
-            <Datasets
-              datasets={datasets}
-              reload={reload}
-              navigate={navigate}
-              notify={setError}
-              onBusyChange={setNavigationLocked}
-            />
-          ) : page === "cameras" ? (
-            <Cameras notify={setError} />
-          ) : page === "collection" && dataset ? (
-            <Collection
-              key={dataset.id}
-              dataset={dataset}
-              reload={reload}
-              notify={setError}
-              onBusyChange={setNavigationLocked}
-            />
-          ) : page === "review" && dataset ? (
-            <Review
-              key={dataset.id}
-              dataset={dataset}
-              notify={setError}
-              reload={reload}
-            />
-          ) : (
-            <div className="empty">
-              请先在数据集页面创建或管理数据集。
-              {selected && `当前数据集：${selected}`}
-            </div>
-          )}
+          <Suspense fallback={<div className="empty">正在加载页面…</div>}>
+            {page === "datasets" ? (
+              <Datasets
+                datasets={datasets}
+                reload={reload}
+                navigate={navigate}
+                notify={setError}
+                onBusyChange={setNavigationLocked}
+              />
+            ) : page === "security-annotation" ? (
+              <SecurityAnnotation notify={setError} onBusyChange={setNavigationLocked} />
+            ) : page === "cameras" ? (
+              <Cameras notify={setError} />
+            ) : page === "collection" && dataset ? (
+              <Collection
+                key={dataset.id}
+                dataset={dataset}
+                reload={reload}
+                notify={setError}
+                onBusyChange={setNavigationLocked}
+              />
+            ) : page === "review" && dataset ? (
+              <Review
+                key={dataset.id}
+                dataset={dataset}
+                initialSampleId={reviewSampleId}
+                onBusyChange={setNavigationLocked}
+                notify={setError}
+                reload={reload}
+              />
+            ) : page === "statistics" && dataset ? (
+              <Statistics
+                key={dataset.id}
+                dataset={dataset}
+                onReview={(sampleId) => {
+                  setReviewSampleId(sampleId);
+                  setPage("review");
+                }}
+              />
+            ) : (
+              <div className="empty">
+                请先在数据集页面创建或管理数据集。
+                {selected && `当前数据集：${selected}`}
+              </div>
+            )}
+          </Suspense>
         </div>
       </main>
     </div>

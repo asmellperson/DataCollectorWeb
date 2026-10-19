@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 import { api, errorText } from "../services/api";
-export function useLiveCamera(cameraId: string, detecting = false) {
+export function useLiveCamera(
+  cameraId: string,
+  detecting = false,
+  intervalMs = 150,
+) {
   const [url, setUrl] = useState("");
   const [status, setStatus] = useState<any>({
     connected: false,
@@ -25,6 +29,10 @@ export function useLiveCamera(cameraId: string, detecting = false) {
     });
     if (!cameraId) return;
     async function pollStatus() {
+      if (document.hidden) {
+        statusTimer = setTimeout(pollStatus, 1000);
+        return;
+      }
       try {
         const s = await api(`/cameras/${cameraId}/status`, {
           signal: controller.signal,
@@ -41,11 +49,15 @@ export function useLiveCamera(cameraId: string, detecting = false) {
       if (!stopped) statusTimer = setTimeout(pollStatus, 1000);
     }
     async function pollFrame() {
+      if (document.hidden) {
+        frameTimer = setTimeout(pollFrame, 1000);
+        return;
+      }
       try {
         const response = await fetch(
           detecting
-            ? "/api/collection/frame"
-            : `/api/cameras/${cameraId}/frame`,
+            ? `/api/collection/frame?camera_id=${encodeURIComponent(cameraId)}`
+            : `/api/cameras/${encodeURIComponent(cameraId)}/frame`,
           { signal: controller.signal },
         );
         if (response.ok) {
@@ -56,7 +68,9 @@ export function useLiveCamera(cameraId: string, detecting = false) {
             if (current) URL.revokeObjectURL(current);
             current = next;
           }
-        } else if (response.status !== 503) {
+        } else if (response.status === 503) {
+          if (!stopped) setUrl("");
+        } else {
           if (!stopped)
             setStatus((s: any) => ({ ...s, error: "预览加载失败" }));
         }
@@ -68,7 +82,7 @@ export function useLiveCamera(cameraId: string, detecting = false) {
             error: errorText(e),
           }));
       }
-      if (!stopped) frameTimer = setTimeout(pollFrame, 150);
+      if (!stopped) frameTimer = setTimeout(pollFrame, intervalMs);
     }
     void pollStatus();
     void pollFrame();
@@ -79,6 +93,6 @@ export function useLiveCamera(cameraId: string, detecting = false) {
       clearTimeout(statusTimer);
       if (current) URL.revokeObjectURL(current);
     };
-  }, [cameraId, detecting]);
+  }, [cameraId, detecting, intervalMs]);
   return { url, status };
 }
