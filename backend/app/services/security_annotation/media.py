@@ -7,6 +7,7 @@ import math
 import os
 from pathlib import Path
 import shutil
+from statistics import median
 import subprocess
 import time
 from uuid import uuid4
@@ -83,7 +84,40 @@ def copy_source(recording_id, path, progress):
     )
 
 
-def index_video(path, progress):
+def normalize_timestamps(raw_times, fps, *, allow_repairs=True):
+    origin = raw_times[0]
+    origin_us = round(origin * 1_000_000)
+    source_us = [round(value * 1_000_000) - origin_us for value in raw_times]
+    steps = [b - a for a, b in zip(source_us, source_us[1:]) if b > a]
+    frame_us = 1_000_000 / fps if fps > 0 else median(steps) if steps else 40_000
+    limit_us = max(500_000, frame_us * 5)
+    times_us = []
+    corrected = []
+    last_good = 0
+    for index, value in enumerate(source_us):
+        if times_us and value <= times_us[-1]:
+            require(allow_repairs, "播放副本时间轴异常，未发布，请重新准备原文件")
+            require(
+                times_us[-1] - value <= limit_us
+                and (index - last_good) * frame_us <= limit_us,
+                f"原视频第 {index + 1} 帧时间戳持续重复或大幅倒退，"
+                f"超出轻微抖动修复范围（当前 {value / 1_000_000:.6f} 秒，"
+                f"上一帧 {times_us[-1] / 1_000_000:.6f} 秒）；原文件已保留",
+            )
+            # 仅消除排序冲突，保留其他源 PTS；不能按固定帧率重写整段。
+            value = times_us[-1] + 1
+            corrected.append(index)
+        else:
+            last_good = index
+        times_us.append(value)
+    return (
+        [value / 1_000_000 for value in times_us],
+        [value / 1_000_000 for value in source_us],
+        corrected,
+    )
+
+
+def index_video(path, progress, *, allow_repairs=True):
     output = run_process(
         [
             executable("ffprobe"),
@@ -92,7 +126,7 @@ def index_video(path, progress):
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=width,height,avg_frame_rate:frame=best_effort_timestamp_time,pkt_duration_time",
+            "stream=width,height,avg_frame_rate,r_frame_rate:frame=best_effort_timestamp_time,pkt_duration_time,duration_time",
             "-of",
             "json",
             str(path),
@@ -108,19 +142,40 @@ def index_video(path, progress):
     )
     raw_times = [float(frame["best_effort_timestamp_time"]) for frame in frames]
     require(all(math.isfinite(t) for t in raw_times), "视频帧时间戳无效")
-    require(
-        all(b > a for a, b in zip(raw_times, raw_times[1:])),
-        "原视频时间戳重复或倒退，请检查录像源",
-    )
     origin = raw_times[0]
-    times = [round(t - origin, 6) for t in raw_times]
     stream = data["streams"][0]
-    numerator, denominator = stream.get("avg_frame_rate", "0/1").split("/")
-    fps = float(numerator) / float(denominator) if float(denominator) else 0
-    last_duration = float(frames[-1].get("pkt_duration_time", 0) or 0)
-    if last_duration <= 0:
+    fps = 0
+    for key in ("avg_frame_rate", "r_frame_rate"):
+        try:
+            numerator, denominator = stream.get(key, "0/1").split("/")
+            value = float(numerator) / float(denominator)
+        except (ValueError, ZeroDivisionError):
+            continue
+        if math.isfinite(value) and value > 0:
+            fps = value
+            break
+    times, source_times, corrected = normalize_timestamps(
+        raw_times, fps, allow_repairs=allow_repairs
+    )
+    last_duration = float(
+        frames[-1].get("duration_time", frames[-1].get("pkt_duration_time", 0)) or 0
+    )
+    if not math.isfinite(last_duration) or last_duration <= 0:
         last_duration = times[-1] - times[-2] if len(times) > 1 else 1 / (fps or 25)
     duration = round(times[-1] + last_duration, 6)
+    repairs = []
+    for index in corrected:
+        issue = {
+            "start_frame": index - 1,
+            "end_frame": index,
+            "start_sec": times[index - 1],
+            "end_sec": times[index + 1] if index + 1 < len(times) else duration,
+        }
+        if repairs and issue["start_sec"] <= repairs[-1]["end_sec"]:
+            repairs[-1]["end_frame"] = index
+            repairs[-1]["end_sec"] = issue["end_sec"]
+        else:
+            repairs.append(issue)
     gaps = [
         {"start_sec": a, "end_sec": b}
         for a, b in zip(times, times[1:])
@@ -128,6 +183,11 @@ def index_video(path, progress):
     ]
     return {
         "times_sec": times,
+        **({"source_times_sec": source_times} if corrected else {}),
+        "timestamp_repair_count": len(corrected),
+        "timestamp_repairs": repairs,
+        "time_basis": "source_pts_with_local_monotonic_repairs"
+        if corrected else "source_pts_seconds_from_first_frame",
         "origin_sec": origin,
         "duration_sec": duration,
         "gaps": gaps,
@@ -136,6 +196,17 @@ def index_video(path, progress):
         "width": stream["width"],
         "height": stream["height"],
     }
+
+
+def verify_preview(index, preview):
+    require(
+        preview["frame_count"] == index["frame_count"],
+        "播放副本帧数与原视频不一致，未发布；原文件已保留",
+    )
+    require(
+        all(abs(a - b) <= 0.000002 for a, b in zip(index["times_sec"], preview["times_sec"])),
+        "播放副本与原视频时间轴不一致，未发布；原文件已保留",
+    )
 
 
 def prepare(recording_id, progress):
@@ -164,34 +235,47 @@ def prepare(recording_id, progress):
                 "-v",
                 "error",
                 "-nostdin",
+                "-copyts",
                 "-i",
                 str(path),
                 "-map",
                 "0:v:0",
                 "-an",
                 "-vf",
-                "setpts=PTS-STARTPTS,scale=trunc(min(1280\\,iw)/2)*2:-2",
+                "settb=1/1000000,setpts='if(eq(N,0),0,max(PTS-STARTPTS,PREV_OUTPTS+1))',"
+                "scale=trunc(min(1280\\,iw)/2)*2:-2",
                 "-c:v",
                 "libx264",
                 "-preset",
                 "fast",
                 "-crf",
                 "23",
+                "-bf",
+                "0",
                 "-pix_fmt",
                 "yuv420p",
-                "-fps_mode",
-                "passthrough",
+                "-enc_time_base",
+                "1:1000000",
+                "-video_track_timescale",
+                "1000000",
+                "-vsync",
+                "0",
                 "-movflags",
                 "+faststart",
                 str(temporary),
             ],
             progress,
         )
+        preview = index_video(temporary, progress, allow_repairs=False)
+        verify_preview(index, preview)
         progress.check()
         temporary.replace(root / "preview.mp4")
     finally:
         temporary.unlink(missing_ok=True)
-    values = {key: value for key, value in index.items() if key != "times_sec"}
+    values = {
+        key: value for key, value in index.items()
+        if key not in ("times_sec", "source_times_sec")
+    }
     store.update(recording_id, **values, state="ready", error="")
     progress.advance()
     return {"recording_id": recording_id}

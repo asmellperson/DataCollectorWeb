@@ -117,6 +117,13 @@ def validate_content(meta, content: InspectionContent):
             )
 
 
+def overlaps_timestamp_repair(meta, start, end):
+    return any(
+        issue["start_sec"] < end and issue["end_sec"] > start
+        for issue in meta.get("timestamp_repairs", [])
+    )
+
+
 def save(recording_id, edit: InspectionEdit, *, origin="manual"):
     with lock(recording_id):
         meta = get(recording_id)

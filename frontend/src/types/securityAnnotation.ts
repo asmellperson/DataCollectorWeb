@@ -53,6 +53,8 @@ export type InspectionRecording = {
   width: number;
   height: number;
   gaps?: { start_sec: number; end_sec: number }[];
+  timestamp_repair_count?: number;
+  timestamp_repairs?: { start_frame: number; end_frame: number; start_sec: number; end_sec: number }[];
   round_count?: number;
   approved_count?: number;
 };

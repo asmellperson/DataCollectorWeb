@@ -91,6 +91,11 @@ export default function SecurityAnnotation({ notify, onBusyChange }: {
             <div className="actions"><span className="tag">{states[detail.recording.state]}</span><span>采集分组：{detail.recording.source_group}</span></div>
             {detail.recording.error && <p role="alert" className="danger">{detail.recording.error}</p>}
             {!!detail.recording.gaps?.length && <p className="danger">原视频有 {detail.recording.gaps.length} 处时间戳缺口，相关轮次需核验可用性。</p>}
+            {!!detail.recording.timestamp_repair_count && <p role="status" className="security-hint">
+              已处理 {detail.recording.timestamp_repair_count} 帧的时间戳重复或轻微抖动，原视频保持完整。
+              异常时段：{detail.recording.timestamp_repairs?.map(issue => `${issue.start_sec.toFixed(3)}～${issue.end_sec.toFixed(3)} 秒`).join("、")}。
+              可逐帧复核，这些时段的轮次暂不进入训练清单。
+            </p>}
             {detail.recording.active_task_id && <TaskProgress key={detail.recording.active_task_id} id={detail.recording.active_task_id} notify={notify} onDone={() => void review.refresh()} />}
             {detail.recording.state === "failed" && <button disabled={working} onClick={() => void operation(() => post(`${recordingBase(detail.recording.id)}/prepare`))}>重新准备已保存的原文件</button>}
           </section>
@@ -132,7 +137,7 @@ export default function SecurityAnnotation({ notify, onBusyChange }: {
           </>}
         </> : <div className="panel empty">选择左侧录像，开始大模型初标与人工复核。</div>}
         <section className="panel security-export"><h2>生成训练清单</h2>
-          <p>已勾选 {selectedExports.length} 段录像。仅收录已确认、人物明确、可用且边界清楚的轮次；待确认内容不会转换成负样本。</p>
+          <p>已勾选 {selectedExports.length} 段录像。仅收录已确认、人物明确、可用且边界清楚的轮次；时间戳异常时段暂不收录，待确认内容不会转换成负样本。</p>
           <div className="security-fields"><label>验证集比例<select value={valRatio} onChange={e => setValRatio(Number(e.target.value))}>
             <option value={0}>0% · 仅生成训练清单</option><option value={0.2}>20% · 按独立录像组划分</option><option value={0.3}>30% · 按独立录像组划分</option>
           </select></label></div>

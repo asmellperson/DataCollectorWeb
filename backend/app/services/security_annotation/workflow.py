@@ -149,6 +149,10 @@ def merge_window(previous, proposed, start, end, prefix, sampled, meta):
             item["notes"] = (item["notes"] + "；原录像时间戳存在缺口，需核验").strip(
                 "；"
             )
+        if store.overlaps_timestamp_repair(meta, item["start_sec"], item["end_sec"]):
+            item["quality"] = "uncertain"
+            item["boundary_uncertain"] = True
+            item["notes"] = (item["notes"] + "；原录像此处时间戳异常，不用于训练清单").strip("；")
         rounds[item["id"]] = item
     merged = InspectionContent(
         persons=list(people.values()),
@@ -285,6 +289,7 @@ def export_manifest(options):
                 or item["inspection"] == "uncertain"
                 or item["boundary_uncertain"]
                 or people.get(item["subject_id"], {}).get("role") != "subject"
+                or store.overlaps_timestamp_repair(meta, item["start_sec"], item["end_sec"])
             ):
                 skipped += 1
                 continue
@@ -308,7 +313,7 @@ def export_manifest(options):
                         "annotation_revision": doc["revision"],
                         "source_group": meta["source_group"],
                         "sha256": meta.get("sha256"),
-                        "time_basis": "source_pts_seconds_from_first_frame",
+                        "time_basis": meta.get("time_basis", "source_pts_seconds_from_first_frame"),
                         "round": {**item, "events": events},
                         "persons": doc["persons"],
                     },
@@ -316,7 +321,7 @@ def export_manifest(options):
             )
     require(
         eligible,
-        "没有可用于训练的已确认轮次；待确认、边界不确定和不可用样本不会作为负样本导出",
+        "没有可用于训练的已确认轮次；待确认、边界不确定、时间戳异常和不可用样本不会作为负样本导出",
     )
     # 相同采集批次或相同原文件哈希必须在同一分组，避免重复导入造成泄漏。
     parent = {meta["id"]: meta["id"] for meta, _ in eligible}
