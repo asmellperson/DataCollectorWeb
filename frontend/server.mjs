@@ -5,6 +5,7 @@ import { resolve, extname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pipeline } from "node:stream";
 import { createGzip } from "node:zlib";
+import { backendPaths, backendSocket } from "./backend.mjs";
 
 const types = {
   ".html": "text/html; charset=utf-8",
@@ -20,23 +21,29 @@ const types = {
 
 export function createFrontendServer({
   root = fileURLToPath(new URL("./dist", import.meta.url)),
-  backend = "http://127.0.0.1:8000",
+  backend,
+  socketPath = backendSocket,
 } = {}) {
   root = resolve(root);
+  const target = backend ? new URL(backend) : null;
   return createServer(async (req, res) => {
+    const pathname = req.url.split("?")[0];
     if (
-      req.url === "/api" ||
-      req.url.startsWith("/api/") ||
-      req.url.startsWith("/api?")
+      backendPaths.some(
+        (prefix) => pathname === prefix || pathname.startsWith(prefix + "/"),
+      )
     ) {
-      const target = new URL(backend);
       const upstream = proxyRequest(
         {
-          hostname: target.hostname,
-          port: target.port,
+          ...(target
+            ? { hostname: target.hostname, port: target.port }
+            : { socketPath }),
           path: req.url,
           method: req.method,
-          headers: { ...req.headers, host: target.host },
+          headers: {
+            ...req.headers,
+            ...(target ? { host: target.host } : {}),
+          },
         },
         (response) => {
           res.writeHead(response.statusCode, response.headers);

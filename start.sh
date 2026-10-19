@@ -5,6 +5,8 @@ PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ENV_NAME="data_collector_web"
 LOG_DIR="$PROJECT_DIR/config/logs"
 RUN_DIR="$PROJECT_DIR/config/run"
+export DCW_BACKEND_SOCKET="${DCW_BACKEND_SOCKET:-$RUN_DIR/backend.sock}"
+export DCW_FRONTEND_PORT="${DCW_FRONTEND_PORT:-5180}"
 BOOT_ID="$(cat /proc/sys/kernel/random/boot_id)"
 ACTION="${1:-start}"
 BACKEND_PID=""
@@ -19,8 +21,8 @@ usage() {
 address() {
   local server_ip
   server_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
-  echo "访问地址：http://${server_ip:-127.0.0.1}:5180/"
-  echo "API 文档：http://${server_ip:-127.0.0.1}:8000/docs"
+  echo "访问地址：http://${server_ip:-127.0.0.1}:$DCW_FRONTEND_PORT/"
+  echo "API 文档：http://${server_ip:-127.0.0.1}:$DCW_FRONTEND_PORT/docs"
 }
 
 # 同时核验 PID、启动时刻、系统启动标识和命令，防止误用过期 PID。
@@ -65,7 +67,9 @@ any_running() {
 }
 healthy() {
   local path
-  for path in '8000/api/health' '5180/api/health' '5180/'; do
+  curl --noproxy '*' --unix-socket "$DCW_BACKEND_SOCKET" --fail --silent --max-time 2 \
+    http://localhost/api/health >/dev/null || return 1
+  for path in "$DCW_FRONTEND_PORT/api/health" "$DCW_FRONTEND_PORT/"; do
     curl --noproxy '*' --fail --silent --max-time 2 "http://127.0.0.1:$path" >/dev/null || return 1
   done
 }
@@ -194,8 +198,9 @@ start_services() {
   "$PYTHON_BIN" - <<'PY'
 import socket
 import sys
+import os
 
-for port in (8000, 5180):
+for port in (int(os.environ["DCW_FRONTEND_PORT"]),):
     with socket.socket() as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:

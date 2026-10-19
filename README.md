@@ -133,9 +133,9 @@ tail -f /usr/zyy/DataCollectorWeb/config/logs/backend.log /usr/zyy/DataCollector
 
 只检查环境、不启动服务：`bash /usr/zyy/DataCollectorWeb/start.sh --check`。若 conda 环境安装在自定义路径，可通过 `DCW_PYTHON=/绝对路径/bin/python bash /usr/zyy/DataCollectorWeb/start.sh` 指定解释器。若端口被其他方式启动的进程占用，脚本会报错退出，不会自动结束其他进程。升级前已运行的旧版前台脚本需先在原终端按 Ctrl+C 停止，再使用新脚本启动。
 
-后端监听 `0.0.0.0:8000`。健康检查：`http://服务器IP:8000/api/health`；API 文档：`http://服务器IP:8000/docs`。
+网页和 API 统一使用 `5180`，服务器只需开放这一个端口。健康检查：`http://服务器IP:5180/api/health`；API 文档：`http://服务器IP:5180/docs`。后端通过项目内的 Unix socket `config/run/backend.sock` 与前端通信，不监听 TCP 端口。
 
-前端配置端口为 `5180`，避免占用服务器其他应用的 5173/5174。当前服务器访问地址：**http://172.16.19.215:5180/**。启动脚本先构建生产资源，再通过 `frontend/server.mjs` 提供静态文件和 `/api` 代理到后端 8000，无需配置跨域；JS/CSS 启用 gzip，带哈希的资源长期缓存，HTML 重新校验。构建失败时不会停止现有服务。开发调试仍可在停止生产前端后执行 `npm run dev` 使用 Vite。
+当前服务器访问地址：**http://172.16.19.215:5180/**。启动脚本先构建生产资源，再通过 `frontend/server.mjs` 提供静态文件，并经本机 socket 转发 API 和接口文档请求，无需配置跨域；JS/CSS 启用 gzip，带哈希的资源长期缓存，HTML 重新校验。构建失败时不会停止现有服务。开发调试仍可在停止生产前端后执行 `npm run dev` 使用 Vite，开发代理也使用同一个本机 socket。
 
 构建检查：
 
@@ -387,7 +387,7 @@ API：`POST /api/datasets/{id}/export/preview` 预览张数，`POST /api/dataset
 
 ## 常见问题
 
-- **页面显示服务未连接**：确认后端 8000 在运行，前端通过 5180 访问；健康接口应返回 `status=ok`。修改端口时同时修改 `frontend/vite.config.ts` 中的代理。
+- **页面显示服务未连接**：执行 `bash start.sh status` 检查前后端及代理状态，通过 `http://服务器IP:5180/api/health` 检查是否返回 `status=ok`，并查看 `config/logs/backend.log`。网页和 API 都使用 5180，后端通过本机 socket 通信。
 - **RTSP 无法连接或断流**：检查地址、账号、服务器到摄像头的网络和 RTSP 端口；默认 TCP；连接/读取超时约 5 秒，失败后约 2 秒重连。预览停止访问 90 秒后自动释放空闲读流。
 - **CUDA 异常**：检查 `nvidia-smi` 和 PyTorch CUDA 支持；当前服务器驱动不可用时使用 `DEVICE=cpu`。切换设备后重启后端。
 - **YOLO-World 加载失败**：检查权重存在、CLIP 依赖安装和首次下载网络；查看后台任务错误与后端日志。离线服务器需预先准备两个权重。

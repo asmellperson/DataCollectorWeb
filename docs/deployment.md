@@ -2,7 +2,7 @@
 
 仓库地址：`http://172.16.8.79:3000/zhouyaoyao/DataCollectorWeb.git`，部署分支为 `main`。
 
-以下步骤适用于 Linux 服务器，使用 Conda 管理 Python。服务器需要能够访问内网 Git 服务和依赖下载源；代码可以放在任意有写权限的目录。下面以 `~/DataCollectorWeb` 为例。
+以下步骤适用于 Linux 服务器，使用 Conda 管理 Python。服务器需要能够访问内网 Git 服务和依赖下载源；代码可以放在任意有写权限的目录。下面以 `/usr/zyy/DataCollectorWeb` 为例。
 
 ## 1. 准备系统依赖并拉取代码
 
@@ -12,7 +12,7 @@ Ubuntu / Debian 可执行以下安装命令；使用 root 登录时省略 `sudo`
 sudo apt-get update
 sudo apt-get install -y git curl ffmpeg util-linux libgl1 libglib2.0-0
 
-cd ~
+cd /usr/zyy
 git clone --branch main http://172.16.8.79:3000/zhouyaoyao/DataCollectorWeb.git
 cd DataCollectorWeb
 ```
@@ -91,9 +91,9 @@ bash start.sh status
 curl --fail http://127.0.0.1:5180/api/health
 ```
 
-浏览器访问 `http://新服务器IP:5180/`。前端通过同源 `/api` 代理连接后端；后端监听 `8000`，API 文档位于 `http://新服务器IP:8000/docs`。确保客户端能访问新服务器的 `5180` 端口。
+浏览器访问 `http://新服务器IP:5180/`，API 文档位于 `http://新服务器IP:5180/docs`。网页和 API 统一使用 `5180`；后端通过本机 Unix socket 与前端通信，不监听 TCP 端口。确保客户端能访问新服务器的 `5180` 端口。
 
-脚本会构建前端并在后台启动服务，关闭 SSH 后继续运行。服务器重启后需要重新启动。管理命令：
+脚本会构建前端并在后台启动服务，关闭 SSH 后继续运行。服务器重启后需要重新启动。如果 Node.js 安装在 Conda 环境中，重新登录后先执行 `conda activate data_collector_web`。管理命令：
 
 ```bash
 bash start.sh logs
