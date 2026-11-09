@@ -10,6 +10,7 @@ import type {
 import { writePreference } from "../services/preferences";
 import { cachedCollectionStatus, readCollectionPreferences, rememberCollectionStatus, mergeStartedSessions } from "../services/collectionState";
 import { serializeClassMapping } from "../services/classMapping";
+import { withRequestTimeout } from "../services/requestTimeout";
 import {
   api,
   post,
@@ -145,19 +146,25 @@ export default function Collection({
     mounted.current = true;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
-    let controller: AbortController | null = null;
+    const controller = new AbortController();
     let inFlight = false;
     async function tick() {
       if (inFlight || stopped) return;
       inFlight = true;
       clearTimeout(timer);
-      controller = new AbortController();
-      const timeout = setTimeout(() => controller?.abort(), 10000);
       const version = statusVersion.current;
       try {
-        const s = await api<CollectionStatus>("/collection/status", {
-          signal: controller.signal,
-        });
+        const s = await withRequestTimeout(
+          (signal) => api<CollectionStatus>("/collection/status", {
+            signal,
+            cache: "no-store",
+          }),
+          {
+            signal: controller.signal,
+            timeoutMs: 10000,
+            message: "采集状态同步超时（10 秒），请检查浏览器到服务器的网络连接后重试。",
+          },
+        );
         if (!stopped && version === statusVersion.current) acceptStatus(s);
       } catch (e) {
         if (!stopped && version === statusVersion.current) {
@@ -165,7 +172,6 @@ export default function Collection({
           setStatusReady(false);
         }
       } finally {
-        clearTimeout(timeout);
         inFlight = false;
         if (!stopped) timer = setTimeout(tick, 1000);
       }
@@ -175,7 +181,7 @@ export default function Collection({
     return () => {
       mounted.current = false;
       stopped = true;
-      controller?.abort();
+      controller.abort();
       clearTimeout(timer);
     };
   }, [dataset.id]);
@@ -337,7 +343,7 @@ export default function Collection({
           <p>目标数据集：{dataset.name}</p>
           <p>
             {statusReady ? `当前数据集后台采集 ${activeSessions.length} 路 · 全部数据集 ${collection.active_count} / 9 路`
-              : "正在同步后台采集状态…"}
+              : statusError ? "采集状态同步失败，请重试。" : "正在同步后台采集状态…"}
           </p>
         </div>
       </div>
@@ -757,7 +763,7 @@ export default function Collection({
                 >
                   {starting
                     ? "正在提交启动请求…"
-                    : !statusReady ? "正在同步采集状态…"
+                    : !statusReady ? statusError ? "采集状态未同步" : "正在同步采集状态…"
                     : !selectedCameras.length ? "请选择摄像头"
                     : !pendingCameras.length && activeSessions.length ? "所选摄像头已在采集"
                     : `开始采集（${pendingCameras.length} 路）`}

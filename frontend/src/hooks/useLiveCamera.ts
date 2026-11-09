@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, errorText } from "../services/api";
+import { withRequestTimeout } from "../services/requestTimeout";
 export function useLiveCamera(
   cameraId: string,
   detecting = false,
@@ -34,9 +35,17 @@ export function useLiveCamera(
         return;
       }
       try {
-        const s = await api(`/cameras/${cameraId}/status`, {
-          signal: controller.signal,
-        });
+        const s = await withRequestTimeout(
+          (signal) => api(`/cameras/${encodeURIComponent(cameraId)}/status`, {
+            signal,
+            cache: "no-store",
+          }),
+          {
+            signal: controller.signal,
+            timeoutMs: 5000,
+            message: "摄像头状态请求超时，请检查网络连接后重试。",
+          },
+        );
         if (!stopped) setStatus(s);
       } catch (e) {
         if (!stopped)
@@ -54,25 +63,30 @@ export function useLiveCamera(
         return;
       }
       try {
-        const response = await fetch(
-          detecting
-            ? `/api/collection/frame?camera_id=${encodeURIComponent(cameraId)}`
-            : `/api/cameras/${encodeURIComponent(cameraId)}/frame`,
-          { signal: controller.signal },
-        );
-        if (response.ok) {
-          const blob = await response.blob();
+        const blob = await withRequestTimeout(async (signal) => {
+          const response = await fetch(
+            detecting
+              ? `/api/collection/frame?camera_id=${encodeURIComponent(cameraId)}`
+              : `/api/cameras/${encodeURIComponent(cameraId)}/frame`,
+            { signal, cache: "no-store" },
+          );
+          if (response.status === 503) return null;
+          if (!response.ok) throw new Error("预览加载失败");
+          return response.blob();
+        }, {
+          signal: controller.signal,
+          timeoutMs: 5000,
+          message: "摄像头预览请求超时，请检查网络连接后重试。",
+        });
+        if (blob) {
           if (!stopped) {
             const next = URL.createObjectURL(blob);
             setUrl(next);
             if (current) URL.revokeObjectURL(current);
             current = next;
           }
-        } else if (response.status === 503) {
-          if (!stopped) setUrl("");
         } else {
-          if (!stopped)
-            setStatus((s: any) => ({ ...s, error: "预览加载失败" }));
+          if (!stopped) setUrl("");
         }
       } catch (e) {
         if (!stopped)
