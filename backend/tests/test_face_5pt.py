@@ -523,6 +523,105 @@ class FaceWorkflowTests(unittest.TestCase):
             self.assertIn("onnxruntime", failure.exception.detail)
             self.assertEqual(manager.cache, {})
 
+    def run_face_trigger(self, predictions, mode="detect_raw", auto_label="scrfd"):
+        capture = Mock(camera={"id": "camera", "name": "test"})
+        capture.snapshot.side_effect = [
+            (i, self.image.copy()) for i in range(len(predictions))
+        ] + [tasks.Cancelled()]
+        options = schemas.CollectionStart(
+            dataset_id=self.did,
+            camera_id="camera",
+            mode=mode,
+            detector="scrfd",
+            auto_label=auto_label,
+        )
+        with (
+            patch.object(manager, "get"),
+            patch.object(
+                manager, "predict", side_effect=copy.deepcopy(predictions)
+            ) as predict,
+            patch.object(collection.time, "monotonic", side_effect=count(100)),
+            patch.object(collection.time, "sleep"),
+        ):
+            with self.assertRaises(tasks.Cancelled):
+                collection.collect(options, capture, self.dataset, self.progress)
+        return predict
+
+    def test_scrfd_trigger_defaults_to_face_and_rejects_other_targets(self):
+        from app.inference.targets import trigger_classes
+
+        options = schemas.CollectionStart(
+            dataset_id=self.did, camera_id="camera", detector="scrfd"
+        )
+        self.assertEqual(options.target_classes, ["face"])
+        self.assertEqual(
+            trigger_classes("scrfd", ["face", "0"]), [{"id": 0, "name": "face"}]
+        )
+        for targets in ([], ["person"], ["1"], ["face", "person"]):
+            with self.assertRaises(HTTPException):
+                trigger_classes("scrfd", targets)
+
+    def test_detect_raw_scrfd_skips_no_face_and_reuses_predictions_with_landmarks(self):
+        predict = self.run_face_trigger([[], [self.face]])
+        self.assertEqual(
+            predict.call_count, 2
+        )  # once per frame, no second labelling pass
+        self.assertTrue(all(call.args[0] == "scrfd" for call in predict.call_args_list))
+        self.assertEqual(predict.call_args.args[2], [{"id": 0, "name": "face"}])
+        samples = annotations.list_samples(self.did)["items"]
+        self.assertEqual(len(samples), 1)
+        ann = annotations.get(self.did, samples[0]["id"])
+        self.assertEqual((ann["width"], ann["height"]), (64, 32))
+        self.assertEqual(ann["objects"], [self.face])
+        self.assertEqual(ann["source"]["mode"], "detect_raw")
+
+    def test_detect_crop_scrfd_translates_points_and_does_not_infer_again(self):
+        predict = self.run_face_trigger([[self.face]], mode="detect_crop")
+        predict.assert_called_once()
+        sample = annotations.list_samples(self.did)["items"][0]
+        ann = annotations.get(self.did, sample["id"])
+        self.assertEqual((ann["width"], ann["height"]), (32, 24))
+        self.assertEqual(ann["objects"][0]["bbox"], [0, 0, 32, 24])
+        self.assertEqual(ann["objects"][0]["keypoints"][0], [8, 6])
+        self.assertEqual(ann["source"]["original_size"], [64, 32])
+        self.assertEqual(self.face["keypoints"][0], [16, 10])
+
+    def test_scrfd_trigger_can_save_unlabelled_images_when_auto_label_is_off(self):
+        predict = self.run_face_trigger([[self.face]], auto_label="off")
+        predict.assert_called_once()
+        sample = annotations.list_samples(self.did)["items"][0]
+        self.assertEqual(annotations.get(self.did, sample["id"])["objects"], [])
+
+    def test_small_face_preview_uses_small_landmark_dots(self):
+        face = copy.deepcopy(self.face)
+        face["bbox"] = [50, 50, 70, 74]
+        face["keypoints"] = [[56, 58], [64, 58], [60, 62], [57, 69], [63, 69]]
+        preview = annotations.render_preview(
+            np.zeros((100, 100, 3), dtype=np.uint8),
+            {"width": 100, "height": 100, "objects": [face]},
+        )
+        red = np.all(preview == [102, 102, 255], axis=2)
+        self.assertTrue(red[58, 56])
+        self.assertLessEqual(int(red.sum()), 4)
+        self.assertFalse(red[58, 58])
+
+    def test_existing_face_preview_refreshes_once_without_editing_annotations(self):
+        sample = self.sample([self.face])
+        before = copy.deepcopy(annotations.get(self.did, sample["id"]))
+        preview = datasets.folder(self.did) / "previews" / f"{sample['id']}.jpg"
+        old_time = preview.stat().st_mtime_ns - 10_000_000_000
+        os.utime(preview, ns=(old_time, old_time))
+        with patch.object(
+            annotations, "render_preview", wraps=annotations.render_preview
+        ) as render:
+            self.assertEqual(annotations.preview_file(self.did, before), preview)
+            refreshed = preview.stat().st_mtime_ns
+            self.assertGreater(refreshed, old_time)
+            annotations.preview_file(self.did, before)
+            annotations.thumbnail(self.did, before)
+            render.assert_called_once()
+        self.assertEqual(annotations.get(self.did, sample["id"]), before)
+
 
 if __name__ == "__main__":
     unittest.main()

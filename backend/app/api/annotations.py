@@ -178,7 +178,7 @@ def media(
         else (
             root / ann["image"]
             if media_kind == "image"
-            else root / "previews" / f"{sample_id}.jpg"
+            else service.preview_file(dataset_id, ann)
         )
     )
     require(path.is_file(), "图片文件不存在", 404)

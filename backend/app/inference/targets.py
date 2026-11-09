@@ -96,6 +96,12 @@ def source_class_ids(cls):
 
 def trigger_classes(provider, targets, model_names=None):
     """Resolve trigger IDs in their own namespace, never as dataset label IDs."""
+    if provider == "scrfd":
+        require(
+            targets and all(target.strip() in ("face", "0") for target in targets),
+            "SCRFD 触发目标固定为 face（0）",
+        )
+        return [{"id": 0, "name": "face"}]
     names = dict(enumerate(COCO_NAMES)) if provider == "yolo_world" else model_names
     require(names is not None, "无法读取触发模型类别")
     names = {int(key): value for key, value in names.items()}

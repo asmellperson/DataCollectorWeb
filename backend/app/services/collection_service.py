@@ -3,6 +3,7 @@ import logging
 import threading
 import time
 from collections import deque
+from contextlib import contextmanager
 from uuid import uuid4
 import cv2
 import numpy as np
@@ -27,6 +28,7 @@ sessions = {}
 def new_state(options):
     return {
         "active": True,
+        "phase": "starting",
         "stopping": False,
         "saved": 0,
         "labeled": 0,
@@ -41,6 +43,32 @@ def new_state(options):
         "preview": None,
         "preview_at": 0.0,
     }
+
+
+def public_session(current):
+    return {
+        k: copy.deepcopy(v)
+        for k, v in current.items()
+        if k not in ("preview", "preview_at")
+    }
+
+
+def set_phase(current, phase):
+    with lock:
+        if not current["stopping"]:
+            current["phase"] = phase
+
+
+@contextmanager
+def inference_lock(progress):
+    # A camera queued behind another model can stop without waiting for its turn.
+    while not manager.lock.acquire(timeout=0.1):
+        progress.check()
+    try:
+        progress.check()
+        yield
+    finally:
+        manager.lock.release()
 
 
 def phash(image):
@@ -59,14 +87,7 @@ def status(camera_id=None):
         selected = [
             s for cid, s in sessions.items() if camera_id is None or cid == camera_id
         ]
-        results = [
-            {
-                k: copy.deepcopy(v)
-                for k, v in s.items()
-                if k not in ("preview", "preview_at")
-            }
-            for s in selected
-        ]
+        results = [public_session(s) for s in selected]
     # 不在注册表锁内读取摄像头，避免与摄像头释放路径反向加锁。
     for result in results:
         with cameras.readers_lock:
@@ -157,7 +178,10 @@ def start(options):
             if options.auto_label != "off":
                 manager.resolve(options.auto_label, options.model_path)
                 datasets.label_classes(dataset, options)
-            if options.mode.startswith("detect_") and options.detector == "yolo_world":
+            if options.mode.startswith("detect_") and options.detector in (
+                "yolo_world",
+                "scrfd",
+            ):
                 trigger_classes(options.detector, options.target_classes)
         require(
             options.mode != "roi_interval" or options.roi is not None,
@@ -181,7 +205,9 @@ def start(options):
                 lambda: finish(capture, current),
             )
             current["task_id"] = result["task_id"]
-            return result
+            # No camera status or model initialization is needed to acknowledge
+            # the request. The client can show the actual background session now.
+            return {**result, "session": public_session(current)}
         except Exception:
             if previous is None:
                 sessions.pop(options.camera_id, None)
@@ -200,6 +226,7 @@ def stop(camera_id=None, dataset_id=None):
                 continue
             if current["task_id"] and current["active"]:
                 current["stopping"] = True
+                current["phase"] = "stopping"
                 tasks.cancel(current["task_id"])
     return status()
 
@@ -209,7 +236,13 @@ def finish(capture, current):
     with lock:
         if sessions.get(current["camera_id"]) is current:
             capture.pinned = False
-            current.update(active=False, stopping=False, preview=None, preview_at=0.0)
+            current.update(
+                active=False,
+                stopping=False,
+                preview=None,
+                preview_at=0.0,
+                phase="failed" if current["error"] else "stopped",
+            )
 
 
 def crop_objects(objects, area):
@@ -252,8 +285,10 @@ def collect(options, capture, dataset, progress, current=None):
         )
         classes = label_classes
         if infer:
-            with manager.lock:
+            set_phase(current, "loading_model")
+            with inference_lock(progress):
                 detector = manager.get(provider, path)
+                progress.check()
                 if trigger:
                     classes = trigger_classes(
                         provider,
@@ -265,6 +300,8 @@ def collect(options, capture, dataset, progress, current=None):
                     manager.get(options.auto_label, options.model_path).set_classes(
                         label_classes
                     )
+                progress.check()
+        set_phase(current, "preparing")
         with Session() as db:
             paths = db.scalars(
                 select(Sample.id)
@@ -283,6 +320,7 @@ def collect(options, capture, dataset, progress, current=None):
                         )
                     )
                 )
+        set_phase(current, "waiting_frame")
         while True:
             progress.check()
             now = time.monotonic()
@@ -301,9 +339,10 @@ def collect(options, capture, dataset, progress, current=None):
             last_id = frame_id
             objects = []
             if infer:
-                objects = manager.predict(
-                    provider, path, classes, frame, options.confidence
-                )
+                with inference_lock(progress):
+                    objects = manager.predict(
+                        provider, path, classes, frame, options.confidence
+                    )
                 last_infer = time.monotonic()
                 progress.check()
                 rendered = annotations.render_preview(
@@ -319,6 +358,7 @@ def collect(options, capture, dataset, progress, current=None):
                 with lock:
                     current["preview"] = jpeg
                     current["preview_at"] = time.monotonic()
+            set_phase(current, "collecting")
             if now - last_check < options.interval:
                 time.sleep(0.03)
                 continue
@@ -357,20 +397,23 @@ def collect(options, capture, dataset, progress, current=None):
                     continue
                 labels = []
                 if options.auto_label != "off":
-                    if not trigger:
+                    if not trigger or (
+                        provider == "scrfd" and options.auto_label == "scrfd"
+                    ):
                         labels = (
                             crop_objects(objects, area)
                             if area
                             else copy.deepcopy(objects)
                         )
                     else:
-                        labels = manager.predict(
-                            options.auto_label,
-                            options.model_path,
-                            label_classes,
-                            saved_frame,
-                            options.confidence,
-                        )
+                        with inference_lock(progress):
+                            labels = manager.predict(
+                                options.auto_label,
+                                options.model_path,
+                                label_classes,
+                                saved_frame,
+                                options.confidence,
+                            )
                 progress.check()
                 annotations.save_sample(
                     options.dataset_id, saved_frame, source, objects=labels

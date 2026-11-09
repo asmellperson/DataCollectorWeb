@@ -338,6 +338,70 @@ class MultiCameraTests(unittest.TestCase):
         self.assertEqual(image.shape, (540, 960, 3))
         self.assertEqual(frame.shape, (1080, 1920, 3))
 
+    def test_start_returns_session_while_loading_and_one_stop_cancels(self):
+        from app.inference import manager
+
+        loading = threading.Event()
+        release = threading.Event()
+
+        def load(*args):
+            loading.set()
+            if not release.wait(5):
+                raise RuntimeError("model load test timed out")
+            return Mock()
+
+        with (
+            patch.object(manager, "resolve", return_value="simulated.onnx"),
+            patch.object(manager, "get", side_effect=load),
+            patch.object(manager, "predict") as predict,
+        ):
+            result = self.collection.start(
+                self.options("slow", mode="detect_raw", detector="scrfd")
+            )
+            try:
+                self.assertEqual(result["session"]["task_id"], result["task_id"])
+                self.assertNotIn("preview", result["session"])
+                self.assertTrue(loading.wait(2))
+                self.assertEqual(
+                    self.collection.status("slow")["phase"], "loading_model"
+                )
+                stopped = self.collection.stop(camera_id="slow")
+                self.assertTrue(stopped["sessions"][0]["stopping"])
+                self.assertEqual(stopped["sessions"][0]["phase"], "stopping")
+            finally:
+                release.set()
+            self.wait_for(lambda: not self.collection.status("slow")["active"])
+            self.wait_for(
+                lambda: self.tasks.get(result["task_id"])["status"] == "cancelled"
+            )
+            self.assertEqual(self.collection.status("slow")["phase"], "stopped")
+            self.assertFalse(self.capture("slow").pinned)
+            predict.assert_not_called()
+
+    def test_stop_can_cancel_camera_queued_behind_another_model(self):
+        from app.inference import manager
+
+        manager.lock.acquire()
+        try:
+            with (
+                patch.object(manager, "resolve", return_value="simulated.onnx"),
+                patch.object(manager, "get") as load,
+            ):
+                result = self.collection.start(
+                    self.options("queued", mode="detect_raw", detector="scrfd")
+                )
+                self.wait_for(
+                    lambda: self.collection.status("queued")["phase"] == "loading_model"
+                )
+                self.collection.stop(camera_id="queued")
+                self.wait_for(lambda: not self.collection.status("queued")["active"])
+                self.wait_for(
+                    lambda: self.tasks.get(result["task_id"])["status"] == "cancelled"
+                )
+                load.assert_not_called()
+        finally:
+            manager.lock.release()
+
 
 if __name__ == "__main__":
     unittest.main()

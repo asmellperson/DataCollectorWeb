@@ -62,6 +62,7 @@ export default function Review({
   const [drawing, setDrawing] = useState(false);
   const faceMode = dataset.annotation_mode === "face_5pt";
   const [placingPoint, setPlacingPoint] = useState<number | null>(null);
+  const [showKeypoints, setShowKeypoints] = useState(true);
   const [history, setHistory] = useState<Snapshot[]>([]);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -595,6 +596,9 @@ export default function Review({
                   <button disabled={blocked || !history.length} onClick={undo}>
                     撤销
                   </button>
+                  {faceMode && <label className="check" title="仅控制画布显示，不改变保存和导出的五点标注">
+                    <input type="checkbox" checked={showKeypoints} onChange={(e) => setShowKeypoints(e.target.checked)} />显示五点
+                  </label>}
                 </>
               )}
             </div>
@@ -633,6 +637,7 @@ export default function Review({
               cancelToken={cancelToken}
               placingPoint={placingPoint}
               onPointChange={faceMode ? changePoint : undefined}
+              showKeypoints={showKeypoints}
             />
           ) : (
             <div className="preview-stage">
@@ -749,7 +754,7 @@ export default function Review({
               </div>
               {faceMode && <div className="face-keypoints">
                 <strong>人脸五点（按画面左右）</strong>
-                <p>选中人脸后，点“放置”再点击画布，或拖动已有点。缺失点保持“缺失”；移动和缩放框时点同步变换。</p>
+                <p>小点按人脸大小显示，悬停查看编号；可关闭“显示五点”观察脸部。点“放置”后点击画布，或拖动已有点。缺失点保持“缺失”。</p>
                 {current ? facePointNames.map((name, index) => {
                   const point = current.keypoints?.[index];
                   return <div key={name} className="face-point-row">
@@ -757,7 +762,7 @@ export default function Review({
                     <small>{point ? `${point[0].toFixed(1)}, ${point[1].toFixed(1)}` : "缺失"}</small>
                     <div className="actions">
                       <button disabled={blocked} className={placingPoint === index ? "primary" : ""} onClick={() => {
-                        setDrawing(false); setPlacingPoint(placingPoint === index ? null : index);
+                        setShowKeypoints(true); setDrawing(false); setPlacingPoint(placingPoint === index ? null : index);
                       }}>{placingPoint === index ? "点击画布…" : "放置 / 重置"}</button>
                       <button disabled={blocked || !point} onClick={() => changePoint(current.id, index, null)}>删除点</button>
                     </div>

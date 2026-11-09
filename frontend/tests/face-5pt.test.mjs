@@ -8,6 +8,7 @@ const { outputText } = ts.transpileModule(source, { compilerOptions: { module: t
 const exports = {};
 new Function("exports", outputText)(exports);
 const { moveFaceBox, setFacePoint } = exports;
+const { facePointRadius } = exports;
 const face = {
   id: "face-1", class_id: 0, class_name: "face", bbox: [10, 10, 50, 50],
   keypoints: [[20, 20], [40, 20], null, [25, 40], [35, 40]], source: "scrfd", confidence: .95,
@@ -45,4 +46,15 @@ test("legacy bbox edits do not introduce keypoints", () => {
   delete original.keypoints;
   const moved = moveFaceBox(original, [0, 0, 40, 40], 100, 100);
   assert.equal("keypoints" in moved, false);
+});
+
+test("visible landmarks shrink with small faces and remain capped under zoom", () => {
+  const small = [0, 0, 20, 20];
+  const large = [0, 0, 200, 200];
+  assert.ok(facePointRadius(small, 1) < facePointRadius(large, 1));
+  assert.equal(facePointRadius(large, 1, true), 2.5);
+  for (const scale of [.25, .5, 1, 2, 4]) {
+    assert.ok(facePointRadius(large, scale, true) * scale <= 2.5);
+    assert.ok(facePointRadius(small, scale) * scale <= 1.8);
+  }
 });

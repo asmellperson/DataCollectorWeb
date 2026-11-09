@@ -27,11 +27,17 @@ python -m pip install 'onnxruntime>=1.20,<2'
 
 1. 新建数据集，任务类型选择“目标检测”，标注模式选择“人脸框 + 五点（SCRFD）”。类别固定为 `0 face`。模式创建后保持不变，原数据集仍默认使用目标框模式。
 2. 导入图片时选择 SCRFD，或先关闭预标导入，再在审核页“预标当前图片 / 批量预标待审核”。视频抽帧与 RTSP 保存后自动标注同样可选择 SCRFD。
-3. RTSP 触发检测仍使用现有 YOLO-World / 自定义 YOLO，保存后的 SCRFD 标注独立运行。固定间隔和 ROI 采集可直接使用 SCRFD。ROI 裁剪会平移框和关键点，裁剪区域外的点改为缺失。
+3. RTSP 选择“检测到目标 · 完整原图”，触发检测器选择“SCRFD 人脸检测”，自动预标选择“SCRFD 人脸五点”，即可在人脸出现时保存完整原图并标注五点；触发目标固定为 `face`。触发和标注复用一次推理。“检测到目标 · 目标裁剪”同样支持 SCRFD，裁剪后同步平移框和关键点，区域外的点改为缺失。现有 YOLO-World / 自定义 YOLO 触发后独立进行 SCRFD 标注的组合仍可使用。
 4. 审核页用 `N` 新增人脸框，拖动或缩放框时点同步变换；选择框后，在右侧为某个点点击“放置 / 重置”，再点击画布。已有点可以直接拖动；“删除点”将该点标为缺失，不会编造默认点。`Esc` 退出放置。
-5. 五点顺序为**画面左侧眼、画面右侧眼、鼻尖、画面左侧嘴角、画面右侧嘴角**，与 SCRFD 输出顺序一致（不是人物自身左右）。画布及右侧控件显示点编号与颜色，缩略图和带标注预览也使用对应颜色。
+5. 五点顺序为**画面左侧眼、画面右侧眼、鼻尖、画面左侧嘴角、画面右侧嘴角**，与 SCRFD 输出顺序一致（不是人物自身左右）。画布使用随人脸显示尺寸变化的小点，悬停时显示编号；选中后半径最多 2.5 屏幕像素。可以取消“显示五点”观察脸部朝向，这不会改变保存和导出的坐标。右侧控件保持编号与颜色，缩略图及带标注预览也使用小点；旧预览在查看时更新样式，不修改标注 JSON 或审核状态。
 6. 删除框同步删除其五点。对后脑勺、空场景等非人脸图，删除最后一个框或点击“清空人脸（负样本）”，然后“确认并下一张”。空标注是有效负样本，可正常通过审核。人工保存过的空标注不会被默认批量预标重新填框；确需重标时明确勾选覆盖。
 7. 每次修改沿用已有自动保存、修订冲突保护、失败重试和撤销。导出默认仅含已确认样本，默认保留零目标图片；可选择包含待审核或取消保留空目标图片。
+
+采集设置与预览选择按数据集保存在当前浏览器。切换到标注审核再返回，会先显示上次状态，再核对后台实际状态；同步期间有明确提示，失败时可以重试。采集中勾选/取消摄像头只控制预览显示，不停止后台采集，状态轮询不会反复勾选被隐藏的摄像头。各路卡片单独显示后台状态及实际运行参数，设置面板用于下一次启动。
+
+点击开始后，会先确认启动请求，再分别显示“正在加载检测模型 / 正在准备采集 / 等待摄像头画面 / 采集中”。点击停止立即禁用相应按钮并显示“正在停止”，无需再次点击。已经进行中的模型加载、推理或文件保存会在返回后检查取消；等待其他模型占用推理锁的摄像头可直接取消排队。停止后台采集后仍可继续预览摄像头。
+
+人脸触发只保存被检出人脸的帧；后脑勺、无人脸等负样本请另用固定间隔采集，或图片导入后确认空标注。
 
 ## 数据兼容与接口
 
@@ -114,10 +120,10 @@ npm run build
 | --- | --- |
 | 模型与配置 | `backend/app/inference/scrfd.py`（新增）、`backend/app/inference/manager.py`、`backend/app/core/config.py`、`backend/requirements.txt`、`config/example.env` |
 | 数据契约与存储 | `backend/app/schemas/contracts.py`、`backend/app/services/dataset_service.py`、`backend/app/services/annotation_service.py` |
-| 采集与导出 | `backend/app/services/collection_service.py`、`backend/app/services/export_service.py`、`backend/app/api/models.py`、`backend/app/api/exports.py` |
-| 前端类型与保存 | `frontend/src/types/index.ts`、`frontend/src/hooks/useImageImport.ts`、`frontend/src/services/annotationSave.ts`、`frontend/src/services/face5pt.ts`（新增） |
+| 采集与导出 | `backend/app/services/collection_service.py`、`backend/app/inference/targets.py`、`backend/app/services/export_service.py`、`backend/app/api/annotations.py`、`backend/app/api/models.py`、`backend/app/api/exports.py` |
+| 前端类型与保存 | `frontend/src/types/index.ts`、`frontend/src/hooks/useImageImport.ts`、`frontend/src/services/annotationSave.ts`、`frontend/src/services/face5pt.ts`、`frontend/src/services/collectionState.ts`（新增） |
 | 画布与界面 | `frontend/src/components/AnnotationCanvas.tsx`、`AutoLabel.tsx`、`ExportDialog.tsx`、`ImageImport.tsx`、`ScrfdInfo.tsx`（新增），后五者同在 `frontend/src/components/` |
 | 页面与样式 | `frontend/src/pages/Datasets.tsx`、`Review.tsx`、`Collection.tsx`（同在 pages 目录）、`frontend/src/styles.css` |
-| 测试与说明 | `backend/tests/test_face_5pt.py`（新增）、`frontend/tests/face-5pt.test.mjs`（新增）、`frontend/tests/annotation-save.test.mjs`、本文档（新增） |
+| 测试与说明 | `backend/tests/test_face_5pt.py`、`backend/tests/test_multicamera.py`、`frontend/tests/face-5pt.test.mjs`、`frontend/tests/collection-state.test.mjs`（新增）、`frontend/tests/annotation-save.test.mjs`、本文档 |
 
-开发环境验证结果：后端全部模块回归及新增检查共 125 项通过，前端 43 项测试通过，TypeScript 与 Vite 生产构建通过，Ruff 与 `git diff --check` 通过。另使用临时数据库、模拟检测器和无头 Chromium 实际验证新建 face_5pt、预标、拖动/放置/删除点、移动/缩放框、新增/删除框、零目标确认和导出，页面无运行错误。真实权重未在当前开发环境加载，须按上面的部署步骤验收。
+开发环境验证结果：后端 133 项、前端 53 项测试通过，TypeScript 与 Vite 构建、Ruff 和 `git diff --check` 通过。另使用临时数据库、模拟检测器和无头 Chromium 实际验证新建 face_5pt、预标、缩小后五点的拖动/放置/删除、显示开关不改变标注、移动/缩放框、新增/删除框、零目标确认和导出，以及采集 → 审核 → 采集往返恢复、隐藏运行中预览和单次停止。真实权重未在当前开发环境加载，须按上面的部署步骤验收。

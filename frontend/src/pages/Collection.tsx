@@ -5,7 +5,10 @@ import type {
   ClassMapping,
   Camera,
   CollectionStatus,
+  CollectionSession,
 } from "../types";
+import { writePreference } from "../services/preferences";
+import { cachedCollectionStatus, readCollectionPreferences, rememberCollectionStatus, mergeStartedSessions } from "../services/collectionState";
 import { serializeClassMapping } from "../services/classMapping";
 import {
   api,
@@ -31,35 +34,42 @@ export default function Collection({
   notify: (s: string) => void;
   onBusyChange: (busy: boolean) => void;
 }) {
-  const [source, setSource] = useState("rtsp");
+  const [saved] = useState(() => readCollectionPreferences(dataset));
+  const [source, setSource] = useState(saved.source);
   const faceMode = dataset.annotation_mode === "face_5pt";
   const [cameras, setCameras] = useState<Camera[]>([]);
-  const [selectedCameras, setSelectedCameras] = useState<string[]>([]);
-  const [mode, setMode] = useState("raw_interval");
-  const [interval, setIntervalValue] = useState(2);
-  const [rois, setRois] = useState<Record<string, BBox | null>>({});
-  const [collection, setCollection] = useState<CollectionStatus>({
-    active: false,
-    active_count: 0,
-    max_cameras: 9,
-    sessions: [],
-  });
+  const [selectedCameras, setSelectedCameras] = useState<string[]>(saved.selectedCameras);
+  const [mode, setMode] = useState(saved.mode);
+  const [interval, setIntervalValue] = useState(saved.interval);
+  const [rois, setRois] = useState<Record<string, BBox | null>>(saved.rois);
+  const [collection, setCollection] = useState<CollectionStatus>(() => cachedCollectionStatus(dataset.id));
   const [starting, setStarting] = useState(false);
+  const startPending = useRef(false);
+  const stopPending = useRef(new Set<string>());
+  const [stoppingCameras, setStoppingCameras] = useState<string[]>([]);
+  const statusVersion = useRef(0);
+  const refreshStatus = useRef(() => {});
+  const [statusError, setStatusError] = useState("");
+  const selectionRestored = useRef(saved.hasSelection);
+  const cameraList = useRef<Camera[]>([]);
   const mounted = useRef(true);
-  const [autoLabel, setAutoLabel] = useState(faceMode ? "scrfd" : "off");
-  const [detector, setDetector] = useState("yolo_world");
-  const [modelPath, setModelPath] = useState("");
-  const [triggerModelPath, setTriggerModelPath] = useState("");
-  const [labelClasses, setLabelClasses] = useState<number[] | null>(null);
-  const [classMapping, setClassMapping] = useState<ClassMapping>({});
-  const [confidence, setConfidence] = useState(0.25);
-  const [similarity, setSimilarity] = useState(0.92);
-  const [targets, setTargets] = useState("person");
-  const restored = useRef(false);
-  const ownSessions = collection.sessions.filter(
+  const [autoLabel, setAutoLabel] = useState(saved.autoLabel);
+  const [detector, setDetector] = useState(saved.detector);
+  const [modelPath, setModelPath] = useState(saved.modelPath);
+  const [triggerModelPath, setTriggerModelPath] = useState(saved.triggerModelPath);
+  const [labelClasses, setLabelClasses] = useState<number[] | null>(saved.labelClasses);
+  const [classMapping, setClassMapping] = useState<ClassMapping>(saved.classMapping);
+  const [confidence, setConfidence] = useState(saved.confidence);
+  const [similarity, setSimilarity] = useState(saved.similarity);
+  const [targets, setTargets] = useState(saved.targets);
+  const restored = useRef(saved.hasSettings);
+  const displaySessions = collection.sessions.map((session) => stoppingCameras.includes(session.camera_id)
+    ? { ...session, stopping: true } : session);
+  const ownSessions = displaySessions.filter(
     (s) => s.dataset_id === dataset.id,
   );
   const activeSessions = ownSessions.filter((s) => s.active);
+  const stoppableSessions = activeSessions.filter((s) => !s.stopping);
   const pendingCameras = selectedCameras.filter(
     (id) => !collection.sessions.some((s) => s.camera_id === id && s.active),
   );
@@ -72,15 +82,18 @@ export default function Collection({
     }),
     { saved: 0, labeled: 0, duplicates: 0 },
   );
-  const ready = useRef(false);
   const [statusReady, setStatusReady] = useState(false);
   useEffect(() => {
     let live = true;
     api<Camera[]>("/cameras")
       .then((r) => {
         if (!live) return;
+        cameraList.current = r;
         setCameras(r);
-        setSelectedCameras((ids) => (ids.length ? ids : r[0] ? [r[0].id] : []));
+        setSelectedCameras((ids) => {
+          const valid = ids.filter((id) => r.some((camera) => camera.id === id));
+          return valid.length || saved.hasSelection ? valid : r[0] ? [r[0].id] : [];
+        });
       })
       .catch((e) => live && notify(errorText(e)));
     return () => {
@@ -90,19 +103,19 @@ export default function Collection({
   function acceptStatus(s: CollectionStatus) {
     if (!mounted.current) return;
     setCollection(s);
+    rememberCollectionStatus(dataset.id, s);
     setStatusReady(true);
-    ready.current = true;
+    setStatusError("");
     const active = s.sessions.filter(
       (item) => item.active && item.dataset_id === dataset.id,
     );
+    if (!selectionRestored.current) {
+      selectionRestored.current = true;
+      setSelectedCameras((ids) => active.length ? active.map((item) => item.camera_id).slice(0, 9)
+        : ids.length ? ids : cameraList.current[0] ? [cameraList.current[0].id] : []);
+    }
     if (active.length) {
-      // 刷新恢复所有运行中的画面；后续轮询只补充，不覆盖用户的新选择。
-      setSelectedCameras((ids) =>
-        [...new Set([...active.map((item) => item.camera_id), ...ids])].slice(
-          0,
-          9,
-        ),
-      );
+      setSource("rtsp");
       if (!restored.current) {
         restored.current = true;
         const config = active[0].config;
@@ -132,34 +145,50 @@ export default function Collection({
     mounted.current = true;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
-    const controller = new AbortController();
+    let controller: AbortController | null = null;
+    let inFlight = false;
     async function tick() {
+      if (inFlight || stopped) return;
+      inFlight = true;
+      clearTimeout(timer);
+      controller = new AbortController();
+      const timeout = setTimeout(() => controller?.abort(), 10000);
+      const version = statusVersion.current;
       try {
         const s = await api<CollectionStatus>("/collection/status", {
           signal: controller.signal,
         });
-        if (!stopped) acceptStatus(s);
+        if (!stopped && version === statusVersion.current) acceptStatus(s);
       } catch (e) {
-        if (!stopped && !ready.current) notify(errorText(e));
+        if (!stopped && version === statusVersion.current) {
+          setStatusError(errorText(e));
+          setStatusReady(false);
+        }
+      } finally {
+        clearTimeout(timeout);
+        inFlight = false;
+        if (!stopped) timer = setTimeout(tick, 1000);
       }
-      if (!stopped) timer = setTimeout(tick, 1000);
     }
+    refreshStatus.current = () => void tick();
     void tick();
     return () => {
       mounted.current = false;
       stopped = true;
-      controller.abort();
+      controller?.abort();
       clearTimeout(timer);
     };
   }, [dataset.id]);
   async function start() {
-    if (starting || !pendingCameras.length) return;
+    if (startPending.current || !statusReady || !pendingCameras.length) return;
+    startPending.current = true;
     setStarting(true);
+    statusVersion.current++;
     restored.current = true;
     try {
       const results = await Promise.allSettled(
         pendingCameras.map((cameraId) =>
-          post("/collection/start", {
+          post<{ task_id: string; session?: CollectionSession }>("/collection/start", {
             dataset_id: dataset.id,
             camera_id: cameraId,
             mode,
@@ -169,20 +198,29 @@ export default function Collection({
             detector,
             model_path: modelPath || null,
             trigger_model_path: triggerModelPath || null,
-            label_class_ids: autoLabel === "off" ? null : labelClasses,
+            label_class_ids: autoLabel === "off" || faceMode ? null : labelClasses,
             label_class_mapping:
-              autoLabel === "off"
+              autoLabel === "off" || faceMode
                 ? {}
                 : serializeClassMapping(classMapping, labelClasses),
             confidence,
             similarity,
-            target_classes: targets
+            target_classes: detector === "scrfd" ? ["face"] : targets
               .split(/[,，\n]/)
               .map((s) => s.trim())
               .filter(Boolean),
           }),
         ),
       );
+      statusVersion.current++;
+      const started = results.flatMap((result) => result.status === "fulfilled" && result.value.session ? [result.value.session] : []);
+      if (mounted.current) {
+        setCollection((previous) => {
+          const next = mergeStartedSessions(previous, started);
+          rememberCollectionStatus(dataset.id, next);
+          return next;
+        });
+      }
       const errors = results.flatMap((r, i) =>
         r.status === "rejected"
           ? [
@@ -194,27 +232,50 @@ export default function Collection({
         notify(
           `部分摄像头未启动：${errors.join("；")}。成功启动的摄像头继续采集。`,
         );
-      acceptStatus(await api<CollectionStatus>("/collection/status"));
     } catch (e) {
       notify(errorText(e));
     } finally {
-      setStarting(false);
+      startPending.current = false;
+      if (mounted.current) setStarting(false);
+      refreshStatus.current();
     }
   }
   async function stop(cameraId?: string) {
+    const ids = ownSessions.filter((s) => s.active && !s.stopping
+      && (!cameraId || s.camera_id === cameraId) && !stopPending.current.has(s.camera_id)).map((s) => s.camera_id);
+    if (!ids.length) return;
+    ids.forEach((id) => stopPending.current.add(id));
+    setStoppingCameras([...stopPending.current]);
+    statusVersion.current++;
     try {
       const query = new URLSearchParams({ dataset_id: dataset.id });
       if (cameraId) query.set("camera_id", cameraId);
-      acceptStatus(await post<CollectionStatus>(`/collection/stop?${query}`));
+      const result = await post<CollectionStatus>(`/collection/stop?${query}`);
+      statusVersion.current++;
+      acceptStatus(result);
       void reload().catch((e) => notify(errorText(e)));
     } catch (e) {
       notify(errorText(e));
+    } finally {
+      statusVersion.current++;
+      ids.forEach((id) => stopPending.current.delete(id));
+      if (mounted.current) setStoppingCameras([...stopPending.current]);
+      refreshStatus.current();
     }
   }
   const [videoFile, setVideoFile] = useState<File | null>(null);
-  const [videoPath, setVideoPath] = useState("");
-  const [sampling, setSampling] = useState("frames");
-  const [every, setEvery] = useState(30);
+  const [videoPath, setVideoPath] = useState(saved.videoPath);
+  const [sampling, setSampling] = useState(saved.sampling);
+  const [every, setEvery] = useState(saved.every);
+  useEffect(() => {
+    writePreference(dataset.id, "collection", {
+      source, selectedCameras, mode, interval, rois, autoLabel, detector,
+      modelPath, triggerModelPath, labelClasses, classMapping, confidence,
+      similarity, targets, videoPath, sampling, every,
+    });
+  }, [dataset.id, source, selectedCameras, mode, interval, rois, autoLabel, detector,
+    modelPath, triggerModelPath, labelClasses, classMapping, confidence, similarity, targets,
+    videoPath, sampling, every]);
   async function importVideo() {
     setBusy(true);
     setTransfer(null);
@@ -275,10 +336,19 @@ export default function Collection({
           <h1>数据采集</h1>
           <p>目标数据集：{dataset.name}</p>
           <p>
-            当前数据集采集中 {activeSessions.length} 路 · 全部数据集{" "}
-            {collection.active_count} / 9 路
+            {statusReady ? `当前数据集后台采集 ${activeSessions.length} 路 · 全部数据集 ${collection.active_count} / 9 路`
+              : "正在同步后台采集状态…"}
           </p>
         </div>
+      </div>
+      <div className="collection-status-message" role="status" aria-live="polite">
+        {!statusReady ? <>
+          <span>{statusError ? "采集状态同步失败，已保留上次显示的设置和状态。" : "正在恢复采集状态和预览；页面切换不会停止后台采集。"}</span>
+          {statusError && <><small>{statusError}</small><button onClick={() => refreshStatus.current()}>重试同步</button></>}
+        </> : activeSessions.length ? <span>
+          后台正在采集 {activeSessions.length} 路，当前显示 {selected.length} 路预览。
+          可以切换到标注审核；勾选摄像头只控制预览，停止采集请使用停止按钮。
+        </span> : <span>采集状态已同步。设置和预览选择已保留，可以继续采集。</span>}
       </div>
       <div className="source-tabs" role="group" aria-label="数据源">
         {[
@@ -305,7 +375,8 @@ export default function Collection({
                 <CollectionCameraTile
                   key={camera.id}
                   camera={camera}
-                  session={ownSessions.find((s) => s.camera_id === camera.id)}
+                  session={displaySessions.find((s) => s.camera_id === camera.id)}
+                  canStop={ownSessions.some((s) => s.camera_id === camera.id)}
                   roi={rois[camera.id] ?? null}
                   roiMode={mode === "roi_interval"}
                   onRoi={(roi) =>
@@ -484,10 +555,11 @@ export default function Collection({
           ) : (
             <>
               <fieldset
-                disabled={starting || !statusReady}
+                disabled={starting}
                 className="camera-selection"
               >
-                <legend>摄像头 · 已选 {selectedCameras.length} / 9</legend>
+                <legend>预览摄像头 · 已选 {selectedCameras.length} / 9</legend>
+                <p>勾选或取消仅显示 / 隐藏预览，不会启动或停止后台采集。</p>
                 <div className="camera-selection-list">
                   {cameras.map((camera) => {
                     const running = collection.sessions.find(
@@ -500,9 +572,9 @@ export default function Collection({
                       <label key={camera.id}>
                         <input
                           type="checkbox"
+                          aria-label={camera.name}
                           checked={checked}
                           disabled={
-                            !!running ||
                             (!checked && selectedCameras.length >= 9)
                           }
                           onChange={(e) =>
@@ -518,7 +590,7 @@ export default function Collection({
                           {elsewhere
                             ? "（其他数据集采集中）"
                             : running
-                              ? "（采集中）"
+                              ? "（后台采集中，可切换预览）"
                               : ""}
                         </span>
                       </label>
@@ -569,6 +641,7 @@ export default function Collection({
                       >
                         <option value="yolo_world">YOLO-World</option>
                         <option value="custom_yolo">自定义 YOLO</option>
+                        <option value="scrfd">SCRFD 人脸检测</option>
                       </select>
                     </label>
                     {detector === "custom_yolo" && (
@@ -578,7 +651,7 @@ export default function Collection({
                         notify={notify}
                       />
                     )}
-                    <label>
+                    {detector === "scrfd" ? <p>触发目标固定为 face。检测到人脸后保存；未检出人脸时跳过。</p> : <><label>
                       触发目标名称或 ID（逗号分隔）
                       <input
                         value={targets}
@@ -594,6 +667,8 @@ export default function Collection({
                         ? "YOLO-World 支持目标名称；数字按 YOLO COCO 的 0–79 类别解释：0 person、2 car、5 bus、7 truck。"
                         : "数字是触发模型的原始类别 ID，请先读取模型类别。仅使用 COCO 权重时，2 才代表 car；这里不是数据集类别 ID。"}
                     </small>
+                    </>}
+                    {detector === "scrfd" && !faceMode && <ScrfdInfo />}
                   </>
                 )}
                 <h4>保存后自动标注</h4>
@@ -619,6 +694,12 @@ export default function Collection({
                   />
                 )}
                 {faceMode && <ScrfdInfo />}
+                {faceMode && mode.startsWith("detect_") && <p>
+                  {detector === "scrfd"
+                    ? "由 SCRFD 人脸检测触发保存；自动预标选择 SCRFD 时，一次检测同时提供人脸框和五点。"
+                    : "当前由 YOLO 目标触发保存，保存后的图片可独立使用 SCRFD 标注人脸五点。"}
+                </p>}
+                {faceMode && mode === "detect_raw" && <p>此模式保留完整原图。需要后脑勺、无人脸负样本时，可另用固定间隔采集。</p>}
                 {autoLabel !== "off" && !faceMode && (
                   <ClassSelector
                     modelClassIds={classMapping}
@@ -659,29 +740,33 @@ export default function Collection({
                   className="primary"
                   disabled={
                     starting ||
+                    stoppableSessions.length < activeSessions.length ||
                     !statusReady ||
                     !pendingCameras.length ||
                     collection.active_count + pendingCameras.length > 9 ||
                     (mode === "roi_interval" &&
                       pendingCameras.some((id) => !rois[id])) ||
                     (mode.startsWith("detect_") &&
-                      (!targets.trim() ||
+                      ((detector !== "scrfd" && !targets.trim()) ||
                         (detector === "custom_yolo" &&
                           !triggerModelPath.trim()))) ||
-                    (autoLabel !== "off" && labelClasses?.length === 0) ||
+                    (autoLabel !== "off" && !faceMode && labelClasses?.length === 0) ||
                     (autoLabel === "custom_yolo" && !modelPath.trim())
                   }
                   onClick={() => void start()}
                 >
                   {starting
-                    ? "正在启动…"
+                    ? "正在提交启动请求…"
+                    : !statusReady ? "正在同步采集状态…"
+                    : !selectedCameras.length ? "请选择摄像头"
+                    : !pendingCameras.length && activeSessions.length ? "所选摄像头已在采集"
                     : `开始采集（${pendingCameras.length} 路）`}
                 </button>
                 <button
-                  disabled={!activeSessions.length || starting}
+                  disabled={!stoppableSessions.length || starting}
                   onClick={() => void stop()}
                 >
-                  停止本数据集全部
+                  {(activeSessions.length > 0 || stoppingCameras.length > 0) && !stoppableSessions.length ? "正在停止，等待当前处理结束…" : "停止本数据集全部"}
                 </button>
               </div>
               {collection.active_count + pendingCameras.length > 9 && (

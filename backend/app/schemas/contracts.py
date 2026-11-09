@@ -108,13 +108,19 @@ class CollectionStart(LabelSelection):
     interval: float = Field(default=2, ge=0.1, le=86400)
     roi: tuple[float, float, float, float] | None = None
     auto_label: Literal["off", "yolo_world", "custom_yolo", "scrfd"] = "off"
-    detector: Literal["yolo_world", "custom_yolo"] = "yolo_world"
+    detector: Literal["yolo_world", "custom_yolo", "scrfd"] = "yolo_world"
     model_path: str | None = None
     trigger_model_path: str | None = None
     confidence: float = Field(default=0.25, gt=0, le=1)
     similarity: float = Field(default=0.92, ge=0, le=1)
     target_classes: list[str] = Field(default_factory=lambda: ["person"], min_length=1)
     infer_interval: float = Field(default=0.5, ge=0.1, le=60)
+
+    @model_validator(mode="after")
+    def default_face_trigger(self):
+        if self.detector == "scrfd" and "target_classes" not in self.model_fields_set:
+            self.target_classes = ["face"]
+        return self
 
     @field_validator("target_classes")
     @classmethod

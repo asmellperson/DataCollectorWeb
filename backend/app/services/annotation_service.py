@@ -239,7 +239,7 @@ def thumbnail(dataset_id, ann):
     # 缩略图单独缓存，原图和全尺寸带框预览不受影响。
     with dataset_lock(dataset_id):
         root = datasets.folder(dataset_id)
-        source = root / "previews" / f"{ann['id']}.jpg"
+        source = preview_file(dataset_id, ann)
         target = root / "previews" / f"{ann['id']}.thumb.jpg"
         if not target.exists() or target.stat().st_mtime_ns < source.stat().st_mtime_ns:
             from PIL import Image
@@ -251,6 +251,32 @@ def thumbnail(dataset_id, ann):
                 image.convert("RGB").save(output, format="JPEG", quality=80)
             atomic_bytes(target, output.getvalue())
         return target
+
+
+def preview_file(dataset_id, ann):
+    root = datasets.folder(dataset_id)
+    target = root / "previews" / f"{ann['id']}.jpg"
+    if any(
+        any(p is not None for p in obj.get("keypoints") or []) for obj in ann["objects"]
+    ):
+        # Upgrade old large-dot previews only when viewed, without rewriting
+        # annotations or scanning every image on application startup.
+        with dataset_lock(dataset_id):
+            marker = root / "previews" / ".small-face-points-v1"
+            if not marker.exists():
+                marker.touch()
+            if (
+                not target.exists()
+                or target.stat().st_mtime_ns < marker.stat().st_mtime_ns
+            ):
+                current = get(dataset_id, ann["id"])
+                atomic_bytes(
+                    target,
+                    encode(
+                        render_preview(read_image(root / current["image"]), current)
+                    ),
+                )
+    return target
 
 
 def render_preview(image, ann):
@@ -277,7 +303,8 @@ def render_preview(image, ann):
         for index, point in enumerate(obj.get("keypoints") or []):
             if point is not None:
                 x, y = point
-                radius = max(2, size // 6)
+                # Preview images also need unobtrusive markers on small faces.
+                radius = max(0.5, min(min(x2 - x1, y2 - y1) * 0.025, max(1, size / 9)))
                 point_color = ["#ff6666", "#66ddff", "#ffdd55", "#88ff88", "#dd88ff"][
                     index
                 ]

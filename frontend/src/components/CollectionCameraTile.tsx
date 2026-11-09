@@ -2,6 +2,7 @@ import { memo, useState } from "react";
 import type { BBox, Camera, CollectionSession } from "../types";
 import { useLiveCamera } from "../hooks/useLiveCamera";
 import LivePreview from "./LivePreview";
+import { collectionPhase } from "../services/collectionState";
 
 export default memo(function CollectionCameraTile({
   camera,
@@ -12,6 +13,7 @@ export default memo(function CollectionCameraTile({
   onStop,
   intervalMs,
   busy,
+  canStop = true,
 }: {
   camera: Camera;
   session?: CollectionSession;
@@ -21,6 +23,7 @@ export default memo(function CollectionCameraTile({
   onStop: () => void;
   intervalMs: number;
   busy: boolean;
+  canStop?: boolean;
 }) {
   const [drawing, setDrawing] = useState(false);
   const live = useLiveCamera(
@@ -37,7 +40,7 @@ export default memo(function CollectionCameraTile({
       <div className="camera-tile-head">
         <strong>{camera.name}</strong>
         <span className={session?.active ? "capture-active" : "muted"}>
-          {session?.stopping ? "正在停止" : session?.active ? "采集中" : "预览"}
+          {collectionPhase(session)}
         </span>
       </div>
       <LivePreview
@@ -50,7 +53,8 @@ export default memo(function CollectionCameraTile({
           onRoi(box);
           setDrawing(false);
         }}
-        message={live.status.error || "等待实时画面…"}
+        message={session?.error || (session?.active && session.phase && session.phase !== "collecting"
+          ? collectionPhase(session) : live.status.error || "等待实时画面…")}
       />
       <div className="camera-tile-status">
         <span>
@@ -66,6 +70,10 @@ export default memo(function CollectionCameraTile({
             {session.error}
           </span>
         )}
+        {session?.active && <small>
+          {session.config.detector === "scrfd" && session.mode.startsWith("detect_") ? "SCRFD 人脸触发 · " : ""}
+          保存间隔 {session.config.interval} 秒 · 置信度 {session.config.confidence} · 去重 {session.config.similarity}
+        </small>}
       </div>
       <div className="camera-tile-actions">
         {roiMode && !session?.active && (
@@ -90,9 +98,9 @@ export default memo(function CollectionCameraTile({
             )}
           </>
         )}
-        {session?.active && (
+        {session?.active && canStop && (
           <button disabled={busy || session.stopping} onClick={onStop}>
-            停止此路
+            {session.stopping ? "正在停止…" : "停止此路"}
           </button>
         )}
       </div>

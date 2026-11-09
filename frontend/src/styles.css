@@ -1101,6 +1101,18 @@ label.check input {
 .face-keypoints {
   margin: 12px 0;
 }
+.collection-status-message {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 12px 16px;
+  border: 1px solid #cad9f3;
+  border-radius: 8px;
+  background: #eef4ff;
+  color: #304b73;
+}
 .face-point-row {
   padding: 8px 0;
   border-bottom: 1px solid #e6ebf2;

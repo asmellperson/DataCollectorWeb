@@ -11,7 +11,7 @@ import {
 } from "react-konva";
 import Konva from "konva";
 import type { AnnotationObject, BBox, FacePoint } from "../types";
-import { facePointColors } from "../services/face5pt";
+import { facePointColors, facePointRadius } from "../services/face5pt";
 import { cachedImage, loadImage } from "../services/imageCache";
 const colors = ["#51bffc", "#f6c557", "#aa93ff", "#51d7a9", "#f58c9d"];
 export const classColor = (id: number) => colors[id % colors.length];
@@ -119,6 +119,7 @@ export default function AnnotationCanvas({
   cancelToken = 0,
   placingPoint = null,
   onPointChange,
+  showKeypoints = true,
 }: {
   url: string;
   width: number;
@@ -133,6 +134,7 @@ export default function AnnotationCanvas({
   cancelToken?: number;
   placingPoint?: number | null;
   onPointChange?: (id: string, index: number, point: FacePoint) => void;
+  showKeypoints?: boolean;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const stage = useRef<Konva.Stage>(null);
@@ -140,6 +142,7 @@ export default function AnnotationCanvas({
   const [image, setImage] = useState<HTMLImageElement>();
   const [loadError, setLoadError] = useState(false);
   const [draft, setDraft] = useState<BBox | null>(null);
+  const [hoveredPoint, setHoveredPoint] = useState<string | null>(null);
   useLayoutEffect(() => {
     const el = host.current!;
     const r = new ResizeObserver((entries) => {
@@ -152,6 +155,7 @@ export default function AnnotationCanvas({
   useEffect(() => {
     let active = true;
     setDraft(null);
+    setHoveredPoint(null);
     setImage(cachedImage(url));
     setLoadError(false);
     loadImage(url)
@@ -249,12 +253,15 @@ export default function AnnotationCanvas({
                   onChange={(b) => onChange(obj.id, b)}
                 />
               ))}
-              {objects.flatMap((obj) => (obj.keypoints ?? []).map((point, index) => point && (
+              {showKeypoints && objects.flatMap((obj) => (obj.keypoints ?? []).map((point, index) => point && (
                 <Group key={`${obj.id}-point-${index}`}>
                   <Circle
                     x={point[0]} y={point[1]}
-                    radius={(selected === obj.id ? 6 : 4) / scale}
-                    fill={facePointColors[index]} stroke="#152030" strokeWidth={1 / scale}
+                    radius={facePointRadius(obj.bbox, scale, selected === obj.id || hoveredPoint === `${obj.id}:${index}`)}
+                    fill={facePointColors[index]} stroke="#152030" strokeWidth={0.5 / scale}
+                    hitStrokeWidth={Math.min(8, Math.min(obj.bbox[2] - obj.bbox[0], obj.bbox[3] - obj.bbox[1]) * scale * 0.2) / scale}
+                    onMouseEnter={() => setHoveredPoint(`${obj.id}:${index}`)}
+                    onMouseLeave={() => setHoveredPoint(null)}
                     draggable={!disabled && !drawing && placingPoint === null}
                     onMouseDown={(e) => { if (placingPoint === null) e.cancelBubble = true; }}
                     onClick={() => onSelect(obj.id)}
@@ -265,8 +272,8 @@ export default function AnnotationCanvas({
                     }}
                     onDragEnd={(e) => onPointChange?.(obj.id, index, [e.target.x(), e.target.y()])}
                   />
-                  <Text x={point[0] + 7 / scale} y={point[1] - 7 / scale}
-                    text={String(index + 1)} fontSize={12 / scale} fill={facePointColors[index]} listening={false} />
+                  {hoveredPoint === `${obj.id}:${index}` && <Text x={point[0] + 5 / scale} y={point[1] - 7 / scale}
+                    text={String(index + 1)} fontSize={10 / scale} fill={facePointColors[index]} listening={false} />}
                 </Group>
               )))}
               {draft && (

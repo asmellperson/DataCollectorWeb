@@ -26,6 +26,7 @@ export type CollectionSession = {
   dataset_id: string;
   task_id: string;
   active: boolean;
+  phase?: string;
   stopping: boolean;
   detecting: boolean;
   mode: string;
