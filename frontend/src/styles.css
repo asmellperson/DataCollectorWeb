@@ -1098,3 +1098,22 @@ label.check input {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+.face-keypoints {
+  margin: 12px 0;
+}
+.face-point-row {
+  padding: 8px 0;
+  border-bottom: 1px solid #e6ebf2;
+}
+.face-point-row > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.face-point-row > small {
+  display: block;
+  margin: 4px 0;
+}
+.face-point-row button {
+  font-size: 12px;
+}

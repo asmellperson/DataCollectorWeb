@@ -1,5 +1,6 @@
 from fastapi import APIRouter
-from app.core.config import MODEL_ROOT, WORLD_MODEL
+from app.core.config import MODEL_ROOT, WORLD_MODEL, SCRFD_MODEL_PATH
+from pathlib import Path
 from app.core.storage import require
 from app.inference import manager
 from app.schemas.contracts import Contract, LabelOptions
@@ -17,6 +18,11 @@ def models():
     return {
         "world_model": WORLD_MODEL,
         "custom_models": [str(p) for p in MODEL_ROOT.glob("*.pt")],
+        "scrfd": {
+            "model_path": SCRFD_MODEL_PATH,
+            "available": Path(SCRFD_MODEL_PATH).expanduser().is_file(),
+            "message": "SCRFD 在使用时加载；请到实际部署服务器验证 SCRFD_MODEL_PATH，不会自动下载模型。",
+        },
     }
 
 

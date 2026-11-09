@@ -85,9 +85,33 @@ def preview(dataset_id, options):
     return split_plan(len(snapshot), options)
 
 
-def export(dataset_id, options, progress, yolo=False):
+def scrfd_lines(ann, filename):
+    """InsightFace RetinaFaceDataset labelv2: header + xyxy + 5*(x,y,flag).
+
+    A negative has a header only (no count, dummy box or blank object line).
+    Missing landmarks must be the complete -1 -1 -1 triplet.
+    """
+    lines = [f"# {filename} {ann['width']} {ann['height']}"]
+    for obj in ann["objects"]:
+        values = list(obj["bbox"])
+        for point in obj.get("keypoints") or [None] * 5:
+            values.extend([-1, -1, -1] if point is None else [*point, 1])
+        lines.append(" ".join(f"{value:.8g}" for value in values))
+    return lines
+
+
+def export(dataset_id, options, progress, yolo=False, scrfd=False):
     with dataset_lock(dataset_id), Session() as db:
         dataset = datasets.get(dataset_id)
+        require(not (yolo and scrfd), "导出格式冲突")
+        require(
+            not scrfd
+            or (
+                dataset["task_type"] == "detection"
+                and dataset.get("annotation_mode") == "face_5pt"
+            ),
+            "SCRFD 导出仅适用于 face_5pt 数据集",
+        )
         require(
             not yolo or dataset["task_type"] == "detection",
             "YOLO Detect 导出只支持 detection 数据集",
@@ -114,7 +138,7 @@ def export(dataset_id, options, progress, yolo=False):
     rng.shuffle(snapshot)
     parts = [part for part, count in plan["counts"].items() for _ in range(count)]
     root = datasets.folder(dataset_id)
-    name = f"{'yolo' if yolo else dataset['task_type']}_{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:6]}"
+    name = f"{'scrfd' if scrfd else 'yolo' if yolo else dataset['task_type']}_{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:6]}"
     temp = root / "exports" / ("." + name)
     dest = root / "exports" / name
     archive = root / "exports" / (name + ".zip")
@@ -125,7 +149,9 @@ def export(dataset_id, options, progress, yolo=False):
         (temp / "annotations").mkdir()
         for part in plan["counts"]:
             folder = "" if part == "all" else part
-            if dataset["task_type"] == "classification":
+            if scrfd:
+                (temp / folder / "images").mkdir(parents=True)
+            elif dataset["task_type"] == "classification":
                 (temp / (folder or "images")).mkdir(parents=True)
             else:
                 (temp / "images" / folder).mkdir(parents=True)
@@ -137,18 +163,34 @@ def export(dataset_id, options, progress, yolo=False):
             "class_id_mapping": mapping,
             "selected_class_ids": options.class_ids,
             "include_empty": options.include_empty,
-            "format": "yolo_detect" if yolo else dataset["task_type"],
+            "format": "scrfd_labelv2"
+            if scrfd
+            else "yolo_detect"
+            if yolo
+            else dataset["task_type"],
             "seed": options.seed,
             "statuses": statuses,
             **plan,
             "samples": [],
         }
+        face_labels = {part: [] for part in plan["counts"]}
+        all_face_labels = []
         for index, ann in enumerate(snapshot):
             progress.check()
             part = parts[index]
             folder = "" if part == "all" else part
             image_path = root / ann["image"]
             output = temp / "images" / folder / image_path.name
+            if scrfd:
+                annotations.validate_annotation(dataset_id, ann)
+                output = temp / folder / "images" / image_path.name
+                face_labels[part].extend(scrfd_lines(ann, image_path.name))
+                all_face_labels.extend(
+                    scrfd_lines(
+                        ann,
+                        str(output.relative_to(temp)) if folder else image_path.name,
+                    )
+                )
             if dataset["task_type"] == "classification":
                 cls = ann["classification"]
                 safe = re.sub(r"[^\w.-]+", "_", cls["class_name"]).strip(".") or "class"
@@ -192,8 +234,30 @@ def export(dataset_id, options, progress, yolo=False):
         write_json(temp / "manifest.json", manifest)
         write_json(
             temp / "dataset.json",
-            {k: dataset[k] for k in ("id", "name", "task_type", "classes")},
+            {
+                k: dataset[k]
+                for k in ("id", "name", "task_type", "classes", "annotation_mode")
+            },
         )
+        if scrfd:
+            (temp / "labelv2.txt").write_text(
+                "\n".join(all_face_labels) + "\n", encoding="utf-8"
+            )
+            for part, lines in face_labels.items():
+                if part != "all":
+                    (temp / part / "labelv2.txt").write_text(
+                        "\n".join(lines) + "\n", encoding="utf-8"
+                    )
+            (temp / "SCRFD_README.txt").write_text(
+                "labelv2: # image_path width height; each face: x1 y1 x2 y2 + five (x y flag) triplets.\n"
+                "Landmark order: image-left eye, image-right eye, nose, image-left mouth, image-right mouth.\n"
+                "Missing point: -1 -1 -1. Negative: header only, no dummy face.\n"
+                "Unsplit img_prefix: images/. Split: use <split>/labelv2.txt with img_prefix=<split>/images/.\n"
+                "Root labelv2.txt for split exports uses img_prefix=<export root>/.\n"
+                "Upstream RetinaFaceDataset drops empty images in training mode; a future training loader must retain negatives.\n"
+                "No training code is included. Confidence and original annotations are retained in annotations/*.json.\n",
+                encoding="utf-8",
+            )
         if yolo:
             classes = {c["id"]: c["name"] for c in dataset["classes"]}
             names = {

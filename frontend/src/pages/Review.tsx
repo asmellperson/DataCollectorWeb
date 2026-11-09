@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { Dataset, Annotation, AnnotationObject, BBox } from "../types";
+import type { Dataset, Annotation, AnnotationObject, BBox, FacePoint } from "../types";
+import { facePointNames, facePointColors, moveFaceBox, setFacePoint } from "../services/face5pt";
 import { api, post, errorText } from "../services/api";
 import AnnotationCanvas, { classColor } from "../components/AnnotationCanvas";
 import AutoLabel from "../components/AutoLabel";
@@ -59,6 +60,8 @@ export default function Review({
   const [selected, setSelected] = useState<string | null>(null);
   const [classId, setClassId] = useState(saved.classId);
   const [drawing, setDrawing] = useState(false);
+  const faceMode = dataset.annotation_mode === "face_5pt";
+  const [placingPoint, setPlacingPoint] = useState<number | null>(null);
   const [history, setHistory] = useState<Snapshot[]>([]);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -118,6 +121,7 @@ export default function Review({
     setSelected(null);
     setHistory([]);
     setDrawing(false);
+    setPlacingPoint(null);
     setSaveText("已保存");
   }
   async function choose(id: string) {
@@ -306,9 +310,14 @@ export default function Review({
     if (!sample) return;
     void edit(
       sample.objects.map((o) =>
-        o.id === id ? { ...o, bbox, source: "manual", confidence: null } : o,
+        o.id === id ? moveFaceBox(o, bbox, sample.width, sample.height) : o,
       ),
     );
+  }
+  function changePoint(id: string, index: number, point: FacePoint) {
+    if (!sample || blocked) return;
+    setPlacingPoint(null);
+    void edit(sample.objects.map((o) => o.id === id ? setFacePoint(o, index, point) : o));
   }
   function addBox(bbox: BBox) {
     if (!sample) return;
@@ -333,6 +342,7 @@ export default function Review({
         bbox,
         confidence: null,
         source: "manual",
+        ...(faceMode ? { keypoints: Array<FacePoint>(5).fill(null) } : {}),
       },
     ]);
   }
@@ -340,6 +350,7 @@ export default function Review({
     if (sample && selected) {
       void edit(sample.objects.filter((o) => o.id !== selected));
       setSelected(null);
+      setPlacingPoint(null);
     }
   }
   function pickClass(cid: number) {
@@ -463,8 +474,10 @@ export default function Review({
       } else if (k === "n" && dataset.task_type === "detection") {
         e.preventDefault();
         setDrawing(true);
+        setPlacingPoint(null);
         setSelected(null);
       } else if (k === "escape") {
+        setPlacingPoint(null);
         setDrawing(false);
         setSelected(null);
         setCancelToken((n) => n + 1);
@@ -567,6 +580,7 @@ export default function Review({
                     className={drawing ? "primary" : ""}
                     onClick={() => {
                       setDrawing(!drawing);
+                      setPlacingPoint(null);
                       setSelected(null);
                     }}
                   >
@@ -575,6 +589,9 @@ export default function Review({
                   <button disabled={blocked || !selected} onClick={removeBox}>
                     删除框 <kbd>Del</kbd>
                   </button>
+                  {faceMode && <button disabled={blocked || !visibleObjects.length} onClick={() => {
+                    setSelected(null); setPlacingPoint(null); void edit([]);
+                  }}>清空人脸（负样本）</button>}
                   <button disabled={blocked || !history.length} onClick={undo}>
                     撤销
                   </button>
@@ -608,12 +625,14 @@ export default function Review({
               height={sample.height}
               objects={visibleObjects}
               selected={selected}
-              onSelect={setSelected}
+              onSelect={(id) => { setSelected(id); setPlacingPoint(null); }}
               onChange={changeBox}
               onAdd={addBox}
               drawing={drawing}
               disabled={blocked}
               cancelToken={cancelToken}
+              placingPoint={placingPoint}
+              onPointChange={faceMode ? changePoint : undefined}
             />
           ) : (
             <div className="preview-stage">
@@ -703,7 +722,7 @@ export default function Review({
                       selected === obj.id ? "object selected" : "object"
                     }
                     disabled={blocked}
-                    onClick={() => setSelected(obj.id)}
+                    onClick={() => { setSelected(obj.id); setPlacingPoint(null); }}
                   >
                     <span
                       className="color-dot"
@@ -718,7 +737,7 @@ export default function Review({
                           ? "人工标注"
                           : obj.source === "yolo_world"
                             ? "YOLO-World"
-                            : "自定义 YOLO"}{" "}
+                            : obj.source === "scrfd" ? "SCRFD" : "自定义 YOLO"}{" "}
                         ·{" "}
                         {obj.confidence === null
                           ? "—"
@@ -728,11 +747,30 @@ export default function Review({
                   </button>
                 ))}
               </div>
+              {faceMode && <div className="face-keypoints">
+                <strong>人脸五点（按画面左右）</strong>
+                <p>选中人脸后，点“放置”再点击画布，或拖动已有点。缺失点保持“缺失”；移动和缩放框时点同步变换。</p>
+                {current ? facePointNames.map((name, index) => {
+                  const point = current.keypoints?.[index];
+                  return <div key={name} className="face-point-row">
+                    <span><i className="color-dot" style={{background: facePointColors[index]}} />{index + 1}. {name}</span>
+                    <small>{point ? `${point[0].toFixed(1)}, ${point[1].toFixed(1)}` : "缺失"}</small>
+                    <div className="actions">
+                      <button disabled={blocked} className={placingPoint === index ? "primary" : ""} onClick={() => {
+                        setDrawing(false); setPlacingPoint(placingPoint === index ? null : index);
+                      }}>{placingPoint === index ? "点击画布…" : "放置 / 重置"}</button>
+                      <button disabled={blocked || !point} onClick={() => changePoint(current.id, index, null)}>删除点</button>
+                    </div>
+                  </div>;
+                }) : <p>先选择或新增一个人脸框。</p>}
+                {sample && !visibleObjects.length && <p>当前为零目标负样本，可直接确认通过审核。</p>}
+              </div>}
               <AutoLabel
                 classes={dataset.classes}
                 key={dataset.id}
                 datasetId={dataset.id}
                 disabled={blocked}
+                faceMode={faceMode}
                 sampleId={sample?.id}
                 onDone={() => refreshCurrent.current()}
                 notify={notify}

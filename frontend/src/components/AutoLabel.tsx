@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { post, errorText } from "../services/api";
 import ModelPicker from "./ModelPicker";
+import ScrfdInfo from "./ScrfdInfo";
 import TaskProgress from "./TaskProgress";
 import ClassSelector from "./ClassSelector";
 import type { ClassItem, ClassMapping } from "../types";
@@ -16,6 +17,7 @@ export default function AutoLabel({
   onDone,
   notify,
   disabled = false,
+  faceMode = false,
 }: {
   datasetId: string;
   classes: ClassItem[];
@@ -23,6 +25,7 @@ export default function AutoLabel({
   onDone: () => void;
   notify: (s: string) => void;
   disabled?: boolean;
+  faceMode?: boolean;
 }) {
   const [saved] = useState(() => readAutoLabelPreferences(datasetId, classes));
   const [provider, setProvider] = useState(saved.provider);
@@ -58,12 +61,12 @@ export default function AutoLabel({
     if (disabled) return;
     try {
       const r = await post(`/datasets/${datasetId}/auto-label`, {
-        provider,
-        model_path: provider === "custom_yolo" ? path : null,
+        provider: faceMode ? "scrfd" : provider,
+        model_path: !faceMode && provider === "custom_yolo" ? path : null,
         confidence,
         overwrite,
-        label_class_ids: labelClasses,
-        label_class_mapping: serializeClassMapping(classMapping, labelClasses),
+        label_class_ids: faceMode ? null : labelClasses,
+        label_class_mapping: faceMode ? {} : serializeClassMapping(classMapping, labelClasses),
         sample_ids: single ? [sampleId] : null,
       });
       setTask(r.task_id);
@@ -74,7 +77,7 @@ export default function AutoLabel({
   return (
     <details className="auto-label" open>
       <summary>已有图片自动标注</summary>
-      <label>
+      {faceMode ? <ScrfdInfo /> : <><label>
         检测器
         <select value={provider} onChange={(e) => setProvider(e.target.value)}>
           <option value="yolo_world">YOLO-World</option>
@@ -84,6 +87,7 @@ export default function AutoLabel({
       {provider === "custom_yolo" && (
         <ModelPicker value={path} onChange={setPath} notify={notify} />
       )}
+      </>}
       <label>
         置信度阈值
         <input
@@ -103,22 +107,22 @@ export default function AutoLabel({
         />
         覆盖所选类别已有标注（重新预标）
       </label>
-      <ClassSelector
+      {!faceMode && <ClassSelector
         modelClassIds={classMapping}
         onModelClassIdsChange={setClassMapping}
         classes={classes}
         value={labelClasses}
         onChange={setLabelClasses}
-      />
+      />}
       <div className="actions">
         <button
-          disabled={disabled || !sampleId || labelClasses?.length === 0}
+          disabled={disabled || !sampleId || (!faceMode && labelClasses?.length === 0)}
           onClick={() => void label(true)}
         >
           预标当前图片
         </button>
         <button
-          disabled={disabled || labelClasses?.length === 0}
+          disabled={disabled || (!faceMode && labelClasses?.length === 0)}
           onClick={() => void label(false)}
         >
           批量预标待审核

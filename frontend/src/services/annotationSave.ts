@@ -10,6 +10,7 @@ function objectValue(object: AnnotationObject) {
     object.bbox,
     object.confidence,
     object.source,
+    object.keypoints ?? null,
   ];
 }
 

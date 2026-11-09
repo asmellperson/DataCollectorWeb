@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Dataset, ClassMapping } from "../types";
 import { api, errorText, formatBytes } from "../services/api";
 import ModelPicker from "./ModelPicker";
+import ScrfdInfo from "./ScrfdInfo";
 import ClassSelector from "./ClassSelector";
 import LabelImportFields from "./LabelImportFields";
 import { useLabelImport } from "../hooks/useLabelImport";
@@ -25,11 +26,12 @@ export default function ImageImport({
   onBusyChange: (busy: boolean) => void;
 }) {
   const [location, setLocation] = useState("local");
+  const faceMode = dataset.annotation_mode === "face_5pt";
   const [mode, setMode] = useState<"images" | "labels">("images");
   const [files, setFiles] = useState<File[]>([]);
   const [skipped, setSkipped] = useState(0);
   const [path, setPath] = useState("");
-  const [provider, setProvider] = useState<ImportOptions["auto_label"]>("off");
+  const [provider, setProvider] = useState<ImportOptions["auto_label"]>(faceMode ? "scrfd" : "off");
   const [modelPath, setModelPath] = useState("");
   const [confidence, setConfidence] = useState(0.25);
   const [labelClasses, setLabelClasses] = useState<number[] | null>(null);
@@ -96,7 +98,7 @@ export default function ImageImport({
       <section className="panel import-main">
         <h2>导入数据</h2>
         <fieldset disabled={busy}>
-          {dataset.task_type === "detection" && <div className="source-tabs" role="group" aria-label="导入方式">
+          {dataset.task_type === "detection" && !faceMode && <div className="source-tabs" role="group" aria-label="导入方式">
             <button className={mode === "images" ? "primary" : ""} onClick={() => { setMode("images"); importer.reset(); }}>仅图片</button>
             <button className={mode === "labels" ? "primary" : ""} onClick={() => { setMode("labels"); setLocation("local"); importer.reset(); }}>图片 + 标签</button>
           </div>}
@@ -213,8 +215,9 @@ export default function ImageImport({
                   }
                 >
                   <option value="off">关闭 · 仅导入图片</option>
-                  <option value="yolo_world">YOLO-World 自动标注</option>
+                  {faceMode ? <option value="scrfd">SCRFD 人脸五点</option> : <><option value="yolo_world">YOLO-World 自动标注</option>
                   <option value="custom_yolo">自定义 YOLO 自动标注</option>
+                  </>}
                 </select>
               </label>
               {provider === "custom_yolo" && (
@@ -224,6 +227,7 @@ export default function ImageImport({
                   notify={notify}
                 />
               )}
+              {faceMode && <ScrfdInfo />}
               {autoLabel && (
                 <label>
                   置信度阈值
@@ -239,7 +243,7 @@ export default function ImageImport({
                   />
                 </label>
               )}
-              {autoLabel && (
+              {autoLabel && !faceMode && (
                 <ClassSelector
                   modelClassIds={classMapping}
                   onModelClassIdsChange={setClassMapping}

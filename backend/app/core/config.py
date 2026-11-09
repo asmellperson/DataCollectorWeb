@@ -14,6 +14,10 @@ STATE_ROOT = Path(os.getenv("STATE_ROOT", str(ROOT / "config"))).resolve()
 MODEL_ROOT = ROOT / "models"
 DEVICE = os.getenv("DEVICE", "cpu")
 WORLD_MODEL = os.getenv("WORLD_MODEL", str(MODEL_ROOT / "yolov8s-worldv2.pt"))
+# Loaded only on an explicit SCRFD request; no download or startup requirement.
+SCRFD_MODEL_PATH = os.getenv(
+    "SCRFD_MODEL_PATH", "/srv/models/insightface/buffalo_l/det_10g.onnx"
+)
 for path in (DATA_ROOT, STATE_ROOT, MODEL_ROOT):
     path.mkdir(parents=True, exist_ok=True)
 (ROOT / "config" / "ultralytics").mkdir(exist_ok=True)

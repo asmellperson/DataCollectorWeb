@@ -1,4 +1,5 @@
 import logging
+import math
 from pathlib import Path
 from uuid import uuid4
 import cv2
@@ -132,8 +133,8 @@ def save_sample(
         ]
         try:
             atomic_bytes(paths[0], original if original is not None else encode(image))
-            write_json(paths[1], ann)
             validate_annotation(dataset_id, ann)
+            write_json(paths[1], ann)
             atomic_bytes(paths[2], encode(render_preview(image, ann)))
             db.add(
                 Sample(
@@ -273,6 +274,16 @@ def render_preview(image, ann):
         )
         color = ["#58c7ff", "#f7c95f", "#a08bff", "#65ddb0"][obj["class_id"] % 4]
         draw.rectangle((x1, y1, x2, y2), outline=color, width=max(2, size // 7))
+        for index, point in enumerate(obj.get("keypoints") or []):
+            if point is not None:
+                x, y = point
+                radius = max(2, size // 6)
+                point_color = ["#ff6666", "#66ddff", "#ffdd55", "#88ff88", "#dd88ff"][
+                    index
+                ]
+                draw.ellipse(
+                    (x - radius, y - radius, x + radius, y + radius), fill=point_color
+                )
         draw.text(
             (x1 + 3, max(0, y1 - size - 4)),
             label,
@@ -367,7 +378,11 @@ def auto_label(dataset_id, options, progress):
                     o for o in current["objects"] if o["class_id"] not in selected_ids
                 ]
                 current.update(objects=retained + objects, status="pending")
-                persist(dataset_id, current)
+                if dataset.get("annotation_mode") == "face_5pt":
+                    current["source"]["label_status"] = (
+                        "labeled" if objects else "empty"
+                    )
+                persist(dataset_id, validate_annotation(dataset_id, current))
             progress.advance()
         except Exception as exc:
             log.exception("样本预标失败：%s", sid)
@@ -378,6 +393,7 @@ def auto_label(dataset_id, options, progress):
 def validate_annotation(dataset_id, ann):
     dataset = datasets.get(dataset_id)
     names = {c["id"]: c["name"] for c in dataset["classes"]}
+    face = dataset.get("annotation_mode") == "face_5pt"
     require(
         dataset["task_type"] == "detection" or not ann["objects"], "当前任务不支持 bbox"
     )
@@ -393,6 +409,33 @@ def validate_annotation(dataset_id, ann):
             "bbox 必须是图像范围内的有效像素坐标",
         )
         obj["class_name"] = names[obj["class_id"]]
+        points = obj.get("keypoints")
+        require(face or points is None, "五点关键点仅适用于 face_5pt 数据集")
+        if face:
+            if points is None:
+                points = [None] * 5
+            require(
+                isinstance(points, (list, tuple)) and len(points) == 5,
+                "人脸关键点必须为五个点；缺失点用 null",
+            )
+            for point in points:
+                require(
+                    point is None
+                    or (
+                        isinstance(point, (list, tuple))
+                        and len(point) == 2
+                        and all(
+                            isinstance(v, (int, float)) and math.isfinite(v)
+                            for v in point
+                        )
+                        and 0 <= point[0] <= ann["width"]
+                        and 0 <= point[1] <= ann["height"]
+                    ),
+                    "关键点必须是图像范围内的有效像素坐标；缺失点用 null",
+                )
+            obj["keypoints"] = points
+        elif points is None:
+            obj.pop("keypoints", None)
     if ann.get("classification"):
         require(dataset["task_type"] == "classification", "当前任务不支持图像分类标签")
         cid = ann["classification"]["class_id"]
@@ -416,6 +459,7 @@ def edit(dataset_id, sample_id, body):
             else None
         )
         ann["status"] = "pending"
+        mark_face_edit(dataset_id, ann)
         return persist(dataset_id, validate_annotation(dataset_id, ann))
 
 
@@ -434,12 +478,35 @@ def edit_object(dataset_id, sample_id, body, object_id=None):
             require(
                 any(o["id"] == object_id for o in ann["objects"]), "标注框不存在", 404
             )
+            previous = next(o for o in ann["objects"] if o["id"] == object_id)
+            if "keypoints" in body.model_fields_set:
+                obj["keypoints"] = body.keypoints
+            elif previous.get("keypoints") is not None:
+                a, b, c, d = previous["bbox"]
+                x, y, right, bottom = body.bbox
+                obj["keypoints"] = [
+                    [
+                        max(
+                            0, min(ann["width"], x + (p[0] - a) * (right - x) / (c - a))
+                        ),
+                        max(
+                            0,
+                            min(ann["height"], y + (p[1] - b) * (bottom - y) / (d - b)),
+                        ),
+                    ]
+                    if p is not None
+                    else None
+                    for p in previous["keypoints"]
+                ]
             ann["objects"] = [
                 obj if o["id"] == object_id else o for o in ann["objects"]
             ]
         else:
+            if body.keypoints is not None:
+                obj["keypoints"] = body.keypoints
             ann["objects"].append(obj)
         ann["status"] = "pending"
+        mark_face_edit(dataset_id, ann)
         return persist(dataset_id, validate_annotation(dataset_id, ann))
 
 
@@ -449,7 +516,14 @@ def delete_object(dataset_id, sample_id, object_id):
         require(any(o["id"] == object_id for o in ann["objects"]), "标注框不存在", 404)
         ann["objects"] = [o for o in ann["objects"] if o["id"] != object_id]
         ann["status"] = "pending"
+        mark_face_edit(dataset_id, ann)
         return persist(dataset_id, ann)
+
+
+def mark_face_edit(dataset_id, ann):
+    # An explicitly saved empty face annotation is a negative, not unlabelled.
+    if datasets.get(dataset_id).get("annotation_mode") == "face_5pt":
+        ann["source"]["label_status"] = "labeled" if ann["objects"] else "empty"
 
 
 def set_status(dataset_id, sample_id, status):

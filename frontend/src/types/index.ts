@@ -5,6 +5,7 @@ export type Dataset = {
   id: string;
   name: string;
   task_type: "raw" | "classification" | "detection";
+  annotation_mode?: "bbox" | "face_5pt";
   classes: ClassItem[];
   total: number;
   pending: number;
@@ -13,6 +14,7 @@ export type Dataset = {
 };
 export type Page = "datasets" | "collection" | "review" | "statistics" | "cameras" | "security-annotation";
 export type BBox = [number, number, number, number];
+export type FacePoint = [number, number] | null;
 export type Camera = {
   id: string;
   name: string;
@@ -57,7 +59,8 @@ export type AnnotationObject = {
   class_name: string;
   bbox: BBox;
   confidence: number | null;
-  source: "manual" | "yolo_world" | "custom_yolo";
+  source: "manual" | "yolo_world" | "custom_yolo" | "scrfd";
+  keypoints?: FacePoint[] | null;
 };
 export type Annotation = {
   id: string;

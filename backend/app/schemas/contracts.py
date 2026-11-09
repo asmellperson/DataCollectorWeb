@@ -4,6 +4,9 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator, model_valida
 ClassIds = Annotated[
     list[Annotated[int, Field(strict=True, ge=0, le=9999)]], Field(min_length=1)
 ]
+Keypoints5 = Annotated[
+    list[tuple[float, float] | None], Field(min_length=5, max_length=5)
+]
 
 
 class Contract(BaseModel):
@@ -20,6 +23,17 @@ class DatasetCreate(Contract):
     name: str = Field(min_length=1, max_length=120)
     task_type: Literal["raw", "classification", "detection"]
     classes: list[ClassItem] = Field(default_factory=list)
+    annotation_mode: Literal["bbox", "face_5pt"] = "bbox"
+
+    @model_validator(mode="after")
+    def check_mode(self):
+        if self.annotation_mode == "face_5pt":
+            if self.task_type != "detection":
+                raise ValueError("face_5pt 仅适用于 detection 数据集")
+            if self.classes and self.classes != [ClassItem(id=0, name="face")]:
+                raise ValueError("face_5pt 类别固定为 0 face")
+            self.classes = [ClassItem(id=0, name="face")]
+        return self
 
 
 class DatasetUpdate(Contract):
@@ -45,7 +59,7 @@ class LabelSelection(Contract):
 
 
 class LabelOptions(LabelSelection):
-    provider: Literal["yolo_world", "custom_yolo"] = "yolo_world"
+    provider: Literal["yolo_world", "custom_yolo", "scrfd"] = "yolo_world"
     model_path: str | None = None
     confidence: float = Field(default=0.25, gt=0, le=1)
     sample_ids: list[str] | None = None
@@ -58,12 +72,15 @@ class ObjectItem(Contract):
     class_name: str = ""
     bbox: tuple[float, float, float, float]
     confidence: float | None = Field(default=None, ge=0, le=1)
-    source: Literal["manual", "yolo_world", "custom_yolo"] = "manual"
+    source: Literal["manual", "yolo_world", "custom_yolo", "scrfd"] = "manual"
+    # Original-image pixel coordinates, ordered as SCRFD output; null = missing.
+    keypoints: Keypoints5 | None = None
 
 
 class ObjectEdit(Contract):
     class_id: int = Field(ge=0)
     bbox: tuple[float, float, float, float]
+    keypoints: Keypoints5 | None = None
 
 
 class AnnotationEdit(Contract):
@@ -90,7 +107,7 @@ class CollectionStart(LabelSelection):
     )
     interval: float = Field(default=2, ge=0.1, le=86400)
     roi: tuple[float, float, float, float] | None = None
-    auto_label: Literal["off", "yolo_world", "custom_yolo"] = "off"
+    auto_label: Literal["off", "yolo_world", "custom_yolo", "scrfd"] = "off"
     detector: Literal["yolo_world", "custom_yolo"] = "yolo_world"
     model_path: str | None = None
     trigger_model_path: str | None = None
@@ -112,7 +129,7 @@ class VideoOptions(LabelSelection):
     path: str = ""
     sampling: Literal["frames", "seconds"] = "frames"
     every: float = Field(default=30, gt=0, le=1000000)
-    auto_label: Literal["off", "yolo_world", "custom_yolo"] = "off"
+    auto_label: Literal["off", "yolo_world", "custom_yolo", "scrfd"] = "off"
     model_path: str | None = None
     confidence: float = Field(default=0.25, gt=0, le=1)
 
@@ -126,7 +143,7 @@ class VideoOptions(LabelSelection):
 
 
 class ImageImportOptions(LabelSelection):
-    auto_label: Literal["off", "yolo_world", "custom_yolo"] = "off"
+    auto_label: Literal["off", "yolo_world", "custom_yolo", "scrfd"] = "off"
     model_path: str | None = None
     confidence: float = Field(default=0.25, gt=0, le=1)
     source_classes: list[ClassItem] | None = None

@@ -30,12 +30,30 @@ def yolo(dataset_id: str, body: ExportOptions):
 @router.post("/export")
 def generic(dataset_id: str, body: ExportOptions):
     dataset = datasets.get(dataset_id)
+    face = dataset.get("annotation_mode") == "face_5pt"
     return tasks.submit(
         "export",
         dataset_id,
         lambda p: service.export(
-            dataset_id, body, p, yolo=dataset["task_type"] == "detection"
+            dataset_id,
+            body,
+            p,
+            yolo=dataset["task_type"] == "detection" and not face,
+            scrfd=face,
         ),
+    )
+
+
+@router.post("/export/scrfd")
+def scrfd(dataset_id: str, body: ExportOptions):
+    dataset = datasets.get(dataset_id)
+    require(
+        dataset["task_type"] == "detection"
+        and dataset.get("annotation_mode") == "face_5pt",
+        "SCRFD 导出仅适用于 face_5pt 数据集",
+    )
+    return tasks.submit(
+        "export", dataset_id, lambda p: service.export(dataset_id, body, p, scrfd=True)
     )
 
 

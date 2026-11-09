@@ -7,9 +7,11 @@ import {
   Text,
   Group,
   Transformer,
+  Circle,
 } from "react-konva";
 import Konva from "konva";
-import type { AnnotationObject, BBox } from "../types";
+import type { AnnotationObject, BBox, FacePoint } from "../types";
+import { facePointColors } from "../services/face5pt";
 import { cachedImage, loadImage } from "../services/imageCache";
 const colors = ["#51bffc", "#f6c557", "#aa93ff", "#51d7a9", "#f58c9d"];
 export const classColor = (id: number) => colors[id % colors.length];
@@ -115,6 +117,8 @@ export default function AnnotationCanvas({
   drawing,
   disabled = false,
   cancelToken = 0,
+  placingPoint = null,
+  onPointChange,
 }: {
   url: string;
   width: number;
@@ -127,6 +131,8 @@ export default function AnnotationCanvas({
   drawing: boolean;
   disabled?: boolean;
   cancelToken?: number;
+  placingPoint?: number | null;
+  onPointChange?: (id: string, index: number, point: FacePoint) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const stage = useRef<Konva.Stage>(null);
@@ -185,7 +191,7 @@ export default function AnnotationCanvas({
   return (
     <div
       ref={host}
-      className={`annotation-canvas ${drawing ? "crosshair" : ""}`}
+      className={`annotation-canvas ${drawing || placingPoint !== null ? "crosshair" : ""}`}
       data-testid="annotation-canvas"
     >
       {image ? (
@@ -195,6 +201,11 @@ export default function AnnotationCanvas({
           height={size.height}
           onMouseDown={(e) => {
             if (disabled) return;
+            if (placingPoint !== null && selected) {
+              const point = pointer();
+              if (point) onPointChange?.(selected, placingPoint, [point.x, point.y]);
+              return;
+            }
             if (drawing) {
               const p = pointer();
               if (p) setDraft([p.x, p.y, p.x, p.y]);
@@ -233,11 +244,31 @@ export default function AnnotationCanvas({
                   scale={scale}
                   width={width}
                   height={height}
-                  disabled={disabled || drawing}
+                  disabled={disabled || drawing || placingPoint !== null}
                   onSelect={() => !drawing && onSelect(obj.id)}
                   onChange={(b) => onChange(obj.id, b)}
                 />
               ))}
+              {objects.flatMap((obj) => (obj.keypoints ?? []).map((point, index) => point && (
+                <Group key={`${obj.id}-point-${index}`}>
+                  <Circle
+                    x={point[0]} y={point[1]}
+                    radius={(selected === obj.id ? 6 : 4) / scale}
+                    fill={facePointColors[index]} stroke="#152030" strokeWidth={1 / scale}
+                    draggable={!disabled && !drawing && placingPoint === null}
+                    onMouseDown={(e) => { if (placingPoint === null) e.cancelBubble = true; }}
+                    onClick={() => onSelect(obj.id)}
+                    onDragStart={() => onSelect(obj.id)}
+                    onDragMove={(e) => {
+                      e.target.x(Math.max(0, Math.min(width, e.target.x())));
+                      e.target.y(Math.max(0, Math.min(height, e.target.y())));
+                    }}
+                    onDragEnd={(e) => onPointChange?.(obj.id, index, [e.target.x(), e.target.y()])}
+                  />
+                  <Text x={point[0] + 7 / scale} y={point[1] - 7 / scale}
+                    text={String(index + 1)} fontSize={12 / scale} fill={facePointColors[index]} listening={false} />
+                </Group>
+              )))}
               {draft && (
                 <Rect
                   x={Math.min(draft[0], draft[2])}

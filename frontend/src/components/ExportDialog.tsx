@@ -23,6 +23,7 @@ export default function ExportDialog({
   notify: (s: string) => void;
 }) {
   const [mode, setMode] = useState<SplitMode>("train_val");
+  const faceMode = dataset.annotation_mode === "face_5pt";
   const [train, setTrain] = useState("80");
   const [val, setVal] = useState("20");
   const [test, setTest] = useState("10");
@@ -121,7 +122,7 @@ export default function ExportDialog({
     setBusy(true);
     try {
       const r = await post(
-        `/datasets/${dataset.id}/export${dataset.task_type === "detection" ? "/yolo" : ""}`,
+        `/datasets/${dataset.id}/export${faceMode ? "/scrfd" : dataset.task_type === "detection" ? "/yolo" : ""}`,
         JSON.parse(requestKey),
       );
       setTask(r.task_id);
@@ -142,7 +143,7 @@ export default function ExportDialog({
       >
         <h2 id="export-title">导出「{dataset.name}」</h2>
         <p>
-          {dataset.task_type === "detection"
+          {faceMode ? "SCRFD · 图片 + labelv2.txt + 五点标注 JSON（含负样本）" : dataset.task_type === "detection"
             ? "YOLO Detect · 图片 + 归一化标签 + data.yaml"
             : dataset.task_type === "classification"
               ? "按类别整理图片 + 统一 JSON"

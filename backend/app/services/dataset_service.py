@@ -35,8 +35,15 @@ def selected_classes(dataset, class_ids):
 
 
 def label_classes(dataset, options):
+    provider = getattr(options, "provider", getattr(options, "auto_label", "off"))
+    face = dataset.get("annotation_mode", "bbox") == "face_5pt"
+    require(
+        (provider == "scrfd") == face,
+        "face_5pt 请使用 SCRFD 预标；SCRFD 仅适用于 face_5pt 数据集",
+    )
     classes = selected_classes(dataset, options.label_class_ids)
     mapping = options.label_class_mapping
+    require(not face or not mapping, "SCRFD 固定使用 0 face，无需类别映射")
     known = {c["id"] for c in dataset["classes"]}
     require(set(mapping) <= known, "标注映射包含不存在的数据集类别，请刷新类别配置")
     resolved = []
@@ -63,6 +70,7 @@ def get(dataset_id):
         )
     return {
         **data,
+        "annotation_mode": data.get("annotation_mode", "bbox"),
         "total": sum(counts.values()),
         "pending": counts.get("pending", 0),
         "approved": counts.get("approved", 0),
@@ -118,6 +126,11 @@ def update(dataset_id, body):
         ensure_idle(dataset_id)
         data = get(dataset_id)
         classes = [c.model_dump() for c in body.classes]
+        require(
+            data.get("annotation_mode") != "face_5pt"
+            or classes == [{"id": 0, "name": "face"}],
+            "face_5pt 类别固定为 0 face",
+        )
         validate_classes(classes, data["task_type"])
         old_ids = {c["id"] for c in data["classes"]}
         new_ids = {c["id"] for c in classes}

@@ -17,6 +17,7 @@ import {
 } from "../services/api";
 import CollectionCameraTile from "../components/CollectionCameraTile";
 import ModelPicker from "../components/ModelPicker";
+import ScrfdInfo from "../components/ScrfdInfo";
 import TaskProgress from "../components/TaskProgress";
 import ClassSelector from "../components/ClassSelector";
 export default function Collection({
@@ -31,6 +32,7 @@ export default function Collection({
   onBusyChange: (busy: boolean) => void;
 }) {
   const [source, setSource] = useState("rtsp");
+  const faceMode = dataset.annotation_mode === "face_5pt";
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [selectedCameras, setSelectedCameras] = useState<string[]>([]);
   const [mode, setMode] = useState("raw_interval");
@@ -44,7 +46,7 @@ export default function Collection({
   });
   const [starting, setStarting] = useState(false);
   const mounted = useRef(true);
-  const [autoLabel, setAutoLabel] = useState("off");
+  const [autoLabel, setAutoLabel] = useState(faceMode ? "scrfd" : "off");
   const [detector, setDetector] = useState("yolo_world");
   const [modelPath, setModelPath] = useState("");
   const [triggerModelPath, setTriggerModelPath] = useState("");
@@ -429,8 +431,9 @@ export default function Collection({
                       onChange={(e) => setAutoLabel(e.target.value)}
                     >
                       <option value="off">关闭</option>
-                      <option value="yolo_world">YOLO-World</option>
+                      {faceMode ? <option value="scrfd">SCRFD 人脸五点</option> : <><option value="yolo_world">YOLO-World</option>
                       <option value="custom_yolo">自定义 YOLO</option>
+                      </>}
                     </select>
                   </label>
                   {autoLabel === "custom_yolo" && (
@@ -440,7 +443,8 @@ export default function Collection({
                       notify={notify}
                     />
                   )}
-                  {autoLabel !== "off" && (
+                  {faceMode && <ScrfdInfo />}
+                  {autoLabel !== "off" && !faceMode && (
                     <ClassSelector
                       modelClassIds={classMapping}
                       onModelClassIdsChange={setClassMapping}
@@ -602,8 +606,9 @@ export default function Collection({
                     onChange={(e) => setAutoLabel(e.target.value)}
                   >
                     <option value="off">关闭</option>
-                    <option value="yolo_world">YOLO-World</option>
+                    {faceMode ? <option value="scrfd">SCRFD 人脸五点</option> : <><option value="yolo_world">YOLO-World</option>
                     <option value="custom_yolo">自定义 YOLO</option>
+                    </>}
                   </select>
                 </label>
                 {autoLabel === "custom_yolo" && (
@@ -613,7 +618,8 @@ export default function Collection({
                     notify={notify}
                   />
                 )}
-                {autoLabel !== "off" && (
+                {faceMode && <ScrfdInfo />}
+                {autoLabel !== "off" && !faceMode && (
                   <ClassSelector
                     modelClassIds={classMapping}
                     onModelClassIdsChange={setClassMapping}

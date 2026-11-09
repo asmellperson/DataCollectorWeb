@@ -221,6 +221,13 @@ def crop_objects(objects, area):
         if c > a and d > b:
             item = copy.deepcopy(obj)
             item.update(id="obj_" + uuid4().hex, bbox=[a - x1, b - y1, c - x1, d - y1])
+            if item.get("keypoints") is not None:
+                item["keypoints"] = [
+                    [p[0] - x1, p[1] - y1]
+                    if p is not None and x1 <= p[0] <= x2 and y1 <= p[1] <= y2
+                    else None
+                    for p in item["keypoints"]
+                ]
             result.append(item)
     return result
 

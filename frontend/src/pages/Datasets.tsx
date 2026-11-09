@@ -4,6 +4,7 @@ import ExportDialog from "../components/ExportDialog";
 import { api, post, errorText, formatBytes } from "../services/api";
 import ImageImport, { ImportProgress } from "../components/ImageImport";
 import ModelPicker from "../components/ModelPicker";
+import ScrfdInfo from "../components/ScrfdInfo";
 import ClassSelector from "../components/ClassSelector";
 import LabelImportFields from "../components/LabelImportFields";
 import { useLabelImport } from "../hooks/useLabelImport";
@@ -31,6 +32,8 @@ export default function Datasets({
   const [editing, setEditing] = useState<Dataset | null | undefined>(undefined);
   const [name, setName] = useState("");
   const [type, setType] = useState<Dataset["task_type"]>("detection");
+  const [annotationMode, setAnnotationMode] = useState<"bbox" | "face_5pt">("bbox");
+  const faceMode = type === "detection" && annotationMode === "face_5pt";
   const [classes, setClasses] = useState("0 person\n1 helmet\n2 forklift");
   const [busy, setBusy] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
@@ -38,7 +41,7 @@ export default function Datasets({
   const [options, setOptions] = useState<ImportOptions>(defaultImportOptions);
   const [importMode, setImportMode] = useState<"images" | "labels">("images");
   const labelImport = useLabelImport("0 person\n1 helmet\n2 forklift");
-  const withLabels = !editing && type === "detection" && importMode === "labels";
+  const withLabels = !editing && type === "detection" && !faceMode && importMode === "labels";
   const [created, setCreated] = useState<Dataset | null>(null);
   const [formError, setFormError] = useState("");
   const [importDataset, setImportDataset] = useState<Dataset | null>(null);
@@ -47,7 +50,7 @@ export default function Datasets({
   const saving = useRef(false);
   const importer = useImageImport();
   const working = busy || importer.busy || labelImport.checking;
-  const draftClasses = classes.split("\n").flatMap((line) => {
+  const draftClasses = faceMode ? [{id: 0, name: "face"}] : classes.split("\n").flatMap((line) => {
     const match = line.trim().match(/^(\d+)\s+(.+)$/);
     return match ? [{ id: Number(match[1]), name: match[2] }] : [];
   });
@@ -68,6 +71,7 @@ export default function Datasets({
     setEditing(d);
     setName(d?.name || "");
     setType(d?.task_type || "detection");
+    setAnnotationMode(d?.annotation_mode || "bbox");
     setClasses(
       d
         ? d.classes.map((c) => `${c.id} ${c.name}`).join("\n")
@@ -82,7 +86,7 @@ export default function Datasets({
     try {
       const annotations = withLabels ? labelImport.data() : undefined;
       const parsed =
-        annotations ? annotations.classes : type === "raw"
+        faceMode ? [{id: 0, name: "face"}] : annotations ? annotations.classes : type === "raw"
           ? []
           : classes
             .split("\n")
@@ -138,6 +142,7 @@ export default function Datasets({
         const dataset = await post<Dataset>("/datasets", {
           name,
           task_type: type,
+          annotation_mode: faceMode ? "face_5pt" : "bbox",
           classes: parsed,
         });
         setCreated(dataset);
@@ -210,6 +215,7 @@ export default function Datasets({
                       }[d.task_type]
                     }
                   </span>
+                  {d.annotation_mode === "face_5pt" && <small>人脸五点 · SCRFD</small>}
                 </td>
                 <td>{d.total}</td>
                 <td>{d.pending}</td>
@@ -350,12 +356,25 @@ export default function Datasets({
                     <option value="raw">原始数据</option>
                   </select>
                 </label>
+                {type === "detection" && <label>
+                  标注模式
+                  <select aria-label="标注模式" disabled={!!editing} value={annotationMode}
+                    onChange={(e) => {
+                      const mode = e.target.value as "bbox" | "face_5pt";
+                      setAnnotationMode(mode); setImportMode("images");
+                      setOptions({...defaultImportOptions, auto_label: mode === "face_5pt" ? "scrfd" : "off"});
+                    }}>
+                    <option value="bbox">目标框（YOLO）</option>
+                    <option value="face_5pt">人脸框 + 五点（SCRFD）</option>
+                  </select>
+                </label>}
                 {type !== "raw" && !withLabels && (
                   <label>
                     类别（每行 ID 名称，ID 创建后保持不变）
                     <textarea
                       rows={4}
-                      value={classes}
+                      value={faceMode ? "0 face" : classes}
+                      disabled={faceMode}
                       onChange={(e) => {
                         setClasses(e.target.value);
                         setOptions((old) => ({
@@ -365,17 +384,17 @@ export default function Datasets({
                         }));
                       }}
                     />
-                    <small>
+                    {faceMode ? <small>人脸五点模式类别固定为 0 face；创建后模式保持不变。</small> : <small>
                       增加一行即可新增类别，例如 3 car。使用未用过的 ID；此 ID
                       不必等于 COCO 或模型类别
                       ID。训练一个或多个目标可在导出时勾选，无需删除其他类别。
-                    </small>
+                    </small>}
                   </label>
                 )}
                 {!editing && (
                   <div className="create-directory">
                     <h3>导入数据 <span className="muted">（可选）</span></h3>
-                    {type === "detection" && <div className="source-tabs" role="group" aria-label="导入方式">
+                    {type === "detection" && !faceMode && <div className="source-tabs" role="group" aria-label="导入方式">
                       <button type="button" className={importMode === "images" ? "primary" : ""}
                         onClick={() => {
                           if (importMode === "labels") {
@@ -472,12 +491,13 @@ export default function Datasets({
                             }
                           >
                             <option value="off">关闭 · 仅导入图片</option>
-                            <option value="yolo_world">
+                            {faceMode ? <option value="scrfd">SCRFD 人脸五点</option> : <><option value="yolo_world">
                               YOLO-World 自动标注
                             </option>
                             <option value="custom_yolo">
                               自定义 YOLO 自动标注
                             </option>
+                            </>}
                           </select>
                         </label>
                         {options.auto_label === "custom_yolo" && (
@@ -489,7 +509,8 @@ export default function Datasets({
                             notify={setFormError}
                           />
                         )}
-                        {options.auto_label !== "off" && (
+                        {faceMode && <ScrfdInfo />}
+                        {options.auto_label !== "off" && !faceMode && (
                           <ClassSelector
                             modelClassIds={options.label_class_mapping ?? {}}
                             onModelClassIdsChange={(label_class_mapping) =>

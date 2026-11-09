@@ -11,7 +11,7 @@ import {
 } from "../services/api";
 
 export type ImportOptions = {
-  auto_label: "off" | "yolo_world" | "custom_yolo";
+  auto_label: "off" | "yolo_world" | "custom_yolo" | "scrfd";
   model_path: string | null;
   confidence: number;
   label_class_ids?: number[] | null;

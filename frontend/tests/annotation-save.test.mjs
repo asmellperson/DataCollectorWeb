@@ -152,3 +152,25 @@ test("an unchanged revision does not count as a verified write", async () => {
     (e) => e === original,
   );
 });
+
+test("read-back compares face keypoints even when boxes and IDs are unchanged", async () => {
+  const failure = new Error("point save lost");
+  const face = {...box, class_name: "face", keypoints: [[5, 6], null, null, null, null]};
+  const draft = {objects: [face], classification: null};
+  const save = setup(async (_path, options) => {
+    if (options.method === "PUT") throw failure;
+    return {...sample, revision: 8, objects: [{...face, keypoints: [[7, 8], null, null, null, null]}]};
+  });
+  await assert.rejects(save("/datasets/data", sample, draft), (e) => e === failure);
+});
+
+test("committed missing keypoints survive a lost save response", async () => {
+  const face = {...box, keypoints: [null, [10, 12], null, [15, 20], null]};
+  const draft = {objects: [face], classification: null};
+  const saved = {...sample, ...draft, revision: 8};
+  const save = setup(async (_path, options) => {
+    if (options.method === "PUT") throw new Error("response lost");
+    return saved;
+  });
+  assert.deepEqual(await save("/datasets/data", sample, draft), saved);
+});
