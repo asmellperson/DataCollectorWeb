@@ -97,6 +97,32 @@ class CameraEdit(Contract):
     name: str = Field(min_length=1, max_length=100)
     url: str = Field(pattern=r"^rtsp[s]?://\S+$")
     transport: Literal["tcp", "udp"] = "tcp"
+    onvif_url: str = Field(default="", max_length=2000)
+    onvif_username: str = Field(default="", max_length=200)
+    onvif_password: str = Field(default="", max_length=500)
+    onvif_profile: str = Field(default="", max_length=200)
+
+    @field_validator("onvif_url")
+    @classmethod
+    def check_onvif_url(cls, value):
+        from urllib.parse import urlsplit
+
+        value = value.strip()
+        if value:
+            parts = urlsplit(value)
+            if parts.scheme not in ("http", "https") or not parts.hostname or parts.username:
+                raise ValueError("ONVIF 地址应为 HTTP(S) 服务地址，账号请单独填写")
+        return value
+
+
+class CameraView(Contract):
+    zoom: float = Field(default=1, ge=1, le=8)
+    center_x: float = Field(default=0.5, ge=0, le=1)
+    center_y: float = Field(default=0.5, ge=0, le=1)
+
+
+class LensMove(Contract):
+    speed: float = Field(ge=-1, le=1)
 
 
 class CollectionStart(LabelSelection):

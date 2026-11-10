@@ -1071,6 +1071,78 @@ label.check input {
   font-size: 13px;
   padding: 5px 8px;
 }
+.camera-controls {
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid #d9e0e9;
+  background: #f8fafc;
+  font-size: 13px;
+}
+.camera-control-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.camera-controls button {
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.camera-controls small {
+  color: #66758b;
+  line-height: 1.5;
+}
+.camera-controls p { margin: 0; }
+.camera-slider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  white-space: nowrap;
+}
+.camera-slider input[type="range"] {
+  flex: 1;
+  min-width: 50px;
+  padding: 8px 0;
+  accent-color: #258966;
+  touch-action: none;
+  cursor: ew-resize;
+}
+.camera-slider output { min-width: 36px; }
+.camera-center-hint {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 5px 10px;
+  border-radius: 5px;
+  background: #142033d9;
+  color: white;
+  pointer-events: none;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.camera-center-mark {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  transform: translate(-50%, -50%);
+  border: 1px solid #59e6a6;
+  border-radius: 50%;
+  pointer-events: none;
+  box-shadow: 0 0 2px #142033;
+}
+.camera-center-mark::before, .camera-center-mark::after {
+  content: "";
+  position: absolute;
+  background: #59e6a6;
+}
+.camera-center-mark::before { width: 28px; height: 1px; left: -5px; top: 9px; }
+.camera-center-mark::after { width: 1px; height: 28px; top: -5px; left: 9px; }
+.camera-onvif-settings { margin: 14px 0; }
+.camera-onvif-settings p { font-size: 13px; color: #66758b; line-height: 1.6; }
+.camera-preview > .live-preview { height: clamp(260px, 52vh, 540px); min-height: 0; }
 .camera-selection-list {
   max-height: 280px;
   overflow: auto;

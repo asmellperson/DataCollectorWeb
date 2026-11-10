@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import type {
   Dataset,
   BBox,
@@ -45,6 +45,11 @@ export default function Collection({
   const [rois, setRois] = useState<Record<string, BBox | null>>(saved.rois);
   const [collection, setCollection] = useState<CollectionStatus>(() => cachedCollectionStatus(dataset.id));
   const [starting, setStarting] = useState(false);
+  const [applyingViews, setApplyingViews] = useState<string[]>([]);
+  const onViewPending = useCallback((cameraId: string, pending: boolean) => {
+    setApplyingViews(ids => ids.includes(cameraId) === pending ? ids
+      : pending ? [...ids, cameraId] : ids.filter(id => id !== cameraId));
+  }, []);
   const startPending = useRef(false);
   const stopPending = useRef(new Set<string>());
   const [stoppingCameras, setStoppingCameras] = useState<string[]>([]);
@@ -74,6 +79,7 @@ export default function Collection({
   const pendingCameras = selectedCameras.filter(
     (id) => !collection.sessions.some((s) => s.camera_id === id && s.active),
   );
+  const viewPending = pendingCameras.some(id => applyingViews.includes(id));
   const selected = cameras.filter((c) => selectedCameras.includes(c.id));
   const counts = ownSessions.reduce(
     (sum, s) => ({
@@ -186,7 +192,7 @@ export default function Collection({
     };
   }, [dataset.id]);
   async function start() {
-    if (startPending.current || !statusReady || !pendingCameras.length) return;
+    if (startPending.current || viewPending || !statusReady || !pendingCameras.length) return;
     startPending.current = true;
     setStarting(true);
     statusVersion.current++;
@@ -393,6 +399,7 @@ export default function Collection({
                     selected.length > 4 ? 400 : selected.length > 1 ? 250 : 150
                   }
                   busy={starting}
+                  onViewPending={onViewPending}
                 />
               ))}
               {!selected.length && (
@@ -746,6 +753,7 @@ export default function Collection({
                   className="primary"
                   disabled={
                     starting ||
+                    viewPending ||
                     stoppableSessions.length < activeSessions.length ||
                     !statusReady ||
                     !pendingCameras.length ||
@@ -763,6 +771,7 @@ export default function Collection({
                 >
                   {starting
                     ? "正在提交启动请求…"
+                    : viewPending ? "正在应用放大设置…"
                     : !statusReady ? statusError ? "采集状态未同步" : "正在同步采集状态…"
                     : !selectedCameras.length ? "请选择摄像头"
                     : !pendingCameras.length && activeSessions.length ? "所选摄像头已在采集"

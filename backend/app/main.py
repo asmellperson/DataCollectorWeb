@@ -27,9 +27,10 @@ async def lifespan(app):
 
     inspection_store.recover()
     yield
-    from app.services import camera_service, collection_service
+    from app.services import camera_service, collection_service, lens_service
 
     collection_service.stop()
+    lens_service.shutdown()
     camera_service.shutdown()
     inspection_recorder.shutdown()
     from app.services.task_service import shutdown

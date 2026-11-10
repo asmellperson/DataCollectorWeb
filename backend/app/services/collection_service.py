@@ -49,7 +49,7 @@ def public_session(current):
     return {
         k: copy.deepcopy(v)
         for k, v in current.items()
-        if k not in ("preview", "preview_at")
+        if k not in ("preview", "preview_at", "preview_view")
     }
 
 
@@ -124,7 +124,7 @@ def status(camera_id=None):
     }
 
 
-def preview_image(camera_id=None):
+def preview_image(camera_id=None, with_view=False):
     with lock:
         if camera_id is None:
             active = [s for s in sessions.values() if s["active"]]
@@ -140,7 +140,14 @@ def preview_image(camera_id=None):
             "正在等待检测画面",
             503,
         )
-        return current["preview"]
+        cid = current["camera_id"]
+        jpeg = current["preview"]
+        preview_view = current.get("preview_view")
+    # A changed view must never show detection boxes from an older crop.
+    capture = cameras.reader(cid)
+    if preview_view is not None and preview_view != capture.camera.get("view", cameras.DEFAULT_VIEW):
+        return capture.image(with_view=with_view)
+    return (jpeg, preview_view or cameras.DEFAULT_VIEW.copy()) if with_view else jpeg
 
 
 def start(options):
@@ -332,7 +339,7 @@ def collect(options, capture, dataset, progress, current=None):
             if delay > 0:
                 time.sleep(min(0.1, delay))
                 continue
-            frame_id, frame = capture.snapshot()
+            frame_id, frame, view = cameras.collection_snapshot(capture)
             if frame is None or frame_id == last_id:
                 time.sleep(0.03)
                 continue
@@ -358,6 +365,7 @@ def collect(options, capture, dataset, progress, current=None):
                 with lock:
                     current["preview"] = jpeg
                     current["preview_at"] = time.monotonic()
+                    current["preview_view"] = {key: view[key] for key in cameras.DEFAULT_VIEW}
             set_phase(current, "collecting")
             if now - last_check < options.interval:
                 time.sleep(0.03)
@@ -383,6 +391,7 @@ def collect(options, capture, dataset, progress, current=None):
                     "camera_id": capture.camera["id"],
                     "frame_id": frame_id,
                     "mode": options.mode,
+                    "view": view,
                 }
                 if area:
                     x1, y1, x2, y2 = area

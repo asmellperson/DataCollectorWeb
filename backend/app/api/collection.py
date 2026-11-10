@@ -1,3 +1,4 @@
+import json
 from fastapi import APIRouter, Response
 from app.schemas.contracts import CollectionStart
 from app.services import collection_service as service
@@ -22,8 +23,9 @@ def start(body: CollectionStart):
 
 @router.get("/frame")
 def frame(camera_id: str | None = None):
+    data, view = service.preview_image(camera_id, with_view=True)
     return Response(
-        service.preview_image(camera_id),
+        data,
         media_type="image/jpeg",
-        headers={"Cache-Control": "no-store"},
+        headers={"Cache-Control": "no-store", "X-Camera-View": json.dumps(view)},
     )

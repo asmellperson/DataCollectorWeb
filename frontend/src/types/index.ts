@@ -15,11 +15,17 @@ export type Dataset = {
 export type Page = "datasets" | "collection" | "review" | "statistics" | "cameras" | "security-annotation";
 export type BBox = [number, number, number, number];
 export type FacePoint = [number, number] | null;
+export type CameraView = { zoom: number; center_x: number; center_y: number };
 export type Camera = {
   id: string;
   name: string;
   url: string;
   transport: string;
+  onvif_url?: string;
+  onvif_username?: string;
+  onvif_password?: string;
+  onvif_profile?: string;
+  view?: CameraView;
 };
 export type CollectionSession = {
   camera_id: string;

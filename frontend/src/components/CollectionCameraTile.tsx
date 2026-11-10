@@ -1,7 +1,7 @@
 import { memo, useState } from "react";
 import type { BBox, Camera, CollectionSession } from "../types";
 import { useLiveCamera } from "../hooks/useLiveCamera";
-import LivePreview from "./LivePreview";
+import CameraPreview from "./CameraPreview";
 import { collectionPhase } from "../services/collectionState";
 
 export default memo(function CollectionCameraTile({
@@ -14,6 +14,7 @@ export default memo(function CollectionCameraTile({
   intervalMs,
   busy,
   canStop = true,
+  onViewPending,
 }: {
   camera: Camera;
   session?: CollectionSession;
@@ -24,6 +25,7 @@ export default memo(function CollectionCameraTile({
   intervalMs: number;
   busy: boolean;
   canStop?: boolean;
+  onViewPending?: (cameraId: string, pending: boolean) => void;
 }) {
   const [drawing, setDrawing] = useState(false);
   const live = useLiveCamera(
@@ -43,10 +45,10 @@ export default memo(function CollectionCameraTile({
           {collectionPhase(session)}
         </span>
       </div>
-      <LivePreview
-        url={live.status.connected ? live.url : ""}
-        width={live.status.width}
-        height={live.status.height}
+      <CameraPreview
+        cameraId={camera.id}
+        live={live}
+        onViewPending={onViewPending}
         roi={session?.active ? session.config.roi : roiMode ? roi : null}
         drawing={editing}
         onRoi={(box) => {

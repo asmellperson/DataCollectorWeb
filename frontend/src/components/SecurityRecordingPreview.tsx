@@ -3,7 +3,7 @@ import { useLiveCamera } from "../hooks/useLiveCamera";
 import type { InspectionRecording } from "../types/securityAnnotation";
 
 export function SecurityCameraPreview({ cameraId, name }: { cameraId: string; name: string }) {
-  const { url, status } = useLiveCamera(cameraId, false, 200);
+  const { url, status } = useLiveCamera(cameraId, false, 200, true);
   return <div className="security-capture-preview">
     {url && <img src={url} alt={`${name}实时画面`} />}
     {!status.connected && <div className="security-preview-message" role="status">

@@ -10,6 +10,8 @@ export default function LivePreview({
   drawing,
   onRoi,
   message,
+  onCenter,
+  center,
 }: {
   url: string;
   width: number;
@@ -18,6 +20,8 @@ export default function LivePreview({
   drawing: boolean;
   onRoi: (b: BBox) => void;
   message: string;
+  onCenter?: (x: number, y: number) => void;
+  center?: { x: number; y: number };
 }) {
   const host = useRef<HTMLDivElement>(null);
   const stage = useRef<Konva.Stage>(null);
@@ -52,14 +56,24 @@ export default function LivePreview({
         <>
           <img
             src={url}
+            alt="摄像头实时画面"
+            draggable={false}
+            onClick={onCenter ? e => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              onCenter((e.clientX - rect.left) / rect.width, (e.clientY - rect.top) / rect.height);
+            } : undefined}
             style={{
               position: "absolute",
               left: ox,
               top: oy,
               width: width * scale,
               height: height * scale,
+              cursor: onCenter ? "crosshair" : undefined,
             }}
           />
+          {onCenter && <span className="camera-center-hint">点击画面选择放大中心</span>}
+          {center && !drawing && <span className="camera-center-mark" aria-hidden="true"
+            style={{ left: ox + center.x * width * scale, top: oy + center.y * height * scale }} />}
           {(box || drawing) && (
             <div
               className={drawing ? "roi-overlay drawing" : "roi-overlay"}

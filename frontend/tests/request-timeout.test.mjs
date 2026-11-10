@@ -91,7 +91,7 @@ test("stalled camera status and frame requests release connections and retry suc
       signals.push(signal);
       return { ok: true, status: 200, blob: () => untilAborted(signal) };
     }
-    return { ok: true, status: 200, blob: async () => new Blob(["preview"]) };
+    return { ok: true, status: 200, headers: new Headers(), blob: async () => new Blob(["preview"]) };
   });
   const hook = load("hooks/useLiveCamera.ts", {
     react: {
@@ -102,6 +102,7 @@ test("stalled camera status and frame requests release connections and retry suc
       },
     },
     "../services/requestTimeout": timeout,
+    "../services/cameraView": load("services/cameraView.ts"),
     "../services/api": {
       api: (_path, { signal }) => {
         statusAttempts++;

@@ -2,12 +2,17 @@ import { useEffect, useState } from "react";
 import { api, post, errorText } from "../services/api";
 import TaskProgress from "../components/TaskProgress";
 import { useLiveCamera } from "../hooks/useLiveCamera";
+import CameraPreview from "../components/CameraPreview";
 export default function Cameras({ notify }: { notify: (s: string) => void }) {
   const [items, setItems] = useState<any[]>([]);
   const [editing, setEditing] = useState<any>(undefined);
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const [transport, setTransport] = useState("tcp");
+  const [onvifUrl, setOnvifUrl] = useState("");
+  const [onvifUsername, setOnvifUsername] = useState("");
+  const [onvifPassword, setOnvifPassword] = useState("");
+  const [onvifProfile, setOnvifProfile] = useState("");
   const [preview, setPreview] = useState("");
   const [task, setTask] = useState("");
   const live = useLiveCamera(preview);
@@ -22,12 +27,17 @@ export default function Cameras({ notify }: { notify: (s: string) => void }) {
     setName(c?.name || "");
     setUrl(c?.url || "");
     setTransport(c?.transport || "tcp");
+    setOnvifUrl(c?.onvif_url || "");
+    setOnvifUsername(c?.onvif_username || "");
+    setOnvifPassword(c?.onvif_password || "");
+    setOnvifProfile(c?.onvif_profile || "");
   }
   async function save() {
     try {
       await api(`/cameras${editing ? "/" + editing.id : ""}`, {
         method: editing ? "PUT" : "POST",
-        body: JSON.stringify({ name, url, transport }),
+        body: JSON.stringify({ name, url, transport, onvif_url: onvifUrl,
+          onvif_username: onvifUsername, onvif_password: onvifPassword, onvif_profile: onvifProfile }),
       });
       setEditing(undefined);
       await load();
@@ -109,9 +119,7 @@ export default function Cameras({ notify }: { notify: (s: string) => void }) {
             {live.status.fps} FPS
             <button onClick={() => setPreview("")}>关闭预览</button>
           </div>
-          <div className="preview-stage">
-            {live.url ? <img src={live.url} /> : <span>等待摄像头连接…</span>}
-          </div>
+          <CameraPreview key={preview} cameraId={preview} live={live} />
         </section>
       )}
       {editing !== undefined && (
@@ -153,6 +161,14 @@ export default function Cameras({ notify }: { notify: (s: string) => void }) {
                 <option value="udp">UDP</option>
               </select>
             </label>
+            <details className="camera-onvif-settings">
+              <summary>镜头控制设置（ONVIF，可选）</summary>
+              <p>默认使用 RTSP 中的摄像头地址及账号，通过 HTTP 80 端口连接 ONVIF。不同端口或独立账号可在这里填写。</p>
+              <label>ONVIF 服务地址<input type="url" value={onvifUrl} onChange={e => setOnvifUrl(e.target.value)} placeholder="http://摄像头IP:端口/onvif/device_service" /></label>
+              <label>ONVIF 用户名<input autoComplete="off" value={onvifUsername} onChange={e => setOnvifUsername(e.target.value)} placeholder="留空使用 RTSP 账号" /></label>
+              <label>ONVIF 密码<input type="password" autoComplete="new-password" value={onvifPassword} onChange={e => setOnvifPassword(e.target.value)} /></label>
+              <label>Profile Token<input value={onvifProfile} onChange={e => setOnvifProfile(e.target.value)} placeholder="留空自动匹配当前 RTSP 视频流" /></label>
+            </details>
             <div className="actions">
               <button type="button" onClick={() => setEditing(undefined)}>
                 取消

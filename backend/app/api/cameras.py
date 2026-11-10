@@ -1,9 +1,10 @@
 import asyncio
+import json
 from fastapi import APIRouter, Response, Request
 from fastapi.responses import StreamingResponse
 from fastapi import HTTPException
-from app.schemas.contracts import CameraEdit
-from app.services import camera_service as service, task_service as tasks
+from app.schemas.contracts import CameraEdit, CameraView, LensMove
+from app.services import camera_service as service, task_service as tasks, lens_service
 
 router = APIRouter(prefix="/api/cameras", tags=["摄像头"])
 router.get("")(service.list_all)
@@ -26,17 +27,38 @@ def test(camera_id: str):
     return tasks.submit("camera_test", None, lambda p: service.test(camera_id, p))
 
 
+@router.get("/{camera_id}/view")
+def view(camera_id: str):
+    return service.get(camera_id)["view"]
+
+
+@router.put("/{camera_id}/view")
+def set_view(camera_id: str, body: CameraView):
+    return service.set_view(camera_id, body)
+
+
+@router.get("/{camera_id}/lens")
+def lens(camera_id: str):
+    return lens_service.capabilities(camera_id)
+
+
+@router.post("/{camera_id}/lens")
+def move_lens(camera_id: str, body: LensMove):
+    return lens_service.move(camera_id, body.speed)
+
+
 @router.get("/{camera_id}/status")
 def status(camera_id: str):
     return service.reader(camera_id).status()
 
 
 @router.get("/{camera_id}/frame")
-def frame(camera_id: str):
+def frame(camera_id: str, original: bool = False):
+    data, view = service.reader(camera_id).image(with_view=True, original=original)
     return Response(
-        service.reader(camera_id).image(),
+        data,
         media_type="image/jpeg",
-        headers={"Cache-Control": "no-store"},
+        headers={"Cache-Control": "no-store", "X-Camera-View": json.dumps(view)},
     )
 
 
